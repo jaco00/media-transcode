@@ -492,6 +492,15 @@ if ($Mode -eq 2) {
 # ---------- 核心处理逻辑 (统一脚本块) ----------
 # 此脚本块同时用于并行和顺序模式
 # 它必须是纯粹的，不依赖外部作用域，所有依赖通过 param 传入
+# ---------- 子进程环境预处理 ----------
+# 避免在每张图片里反复拼接 PATH 导致 Runspace 环境膨胀
+if ($nconvertDir -and ($env:PATH -split ';' -notcontains $nconvertDir)) {
+    $env:PATH = "$nconvertDir;$env:PATH"
+}
+if ($avifencDir -and ($env:PATH -split ';' -notcontains $avifencDir)) {
+    $env:PATH = "$avifencDir;$env:PATH"
+}
+
 $processImageBlock = {
     param($file, $config, $progress)
     
@@ -561,12 +570,6 @@ $processImageBlock = {
                 throw "无法处理 HEIC/HEIF 文件: 找不到 nconvert 命令。请安装 XnView/NConvert 或配置 \$NCONVERT_HOME。"
             }
             
-            # --- 并行模式修复：强制设置 NConvert 目录到 PATH ---
-            if ($config.nconvertDir) {
-                $env:PATH = "$($config.nconvertDir);$env:PATH"
-            }
-            # ------------------------------------------------------
-
             # 构造 nconvert 参数
             $nconvertArgs = @("-out", "avif")
             $nconvertArgs += @("-q", $config.HeicQuality)
@@ -608,8 +611,6 @@ $processImageBlock = {
             $avifArgs = @()
             if ($config.encoderOptions) { $avifArgs += $config.encoderOptions }
             $avifArgs += @("-q", $config.Quality, $src, $avifOut)
-
-            if ($config.avifencDir) { $env:PATH = "$($config.avifencDir);$env:PATH" }
 
             # 构造参数字符串用于诊断
             $avifArgStr = "$($avifArgs -join ' ')"
