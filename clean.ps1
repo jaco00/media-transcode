@@ -221,27 +221,68 @@ else {
 }
 
 # === 显示文件列表（前10个） ===
-if ($imageMatches.Count + $videoMatches.Count -le 10) {
-    Write-Host "待删除文件列表:" -ForegroundColor Yellow
-    Write-Host ""
-    $imageMatches | ForEach-Object {
-        Write-Host "  📸 $($_.RelativePath)" -ForegroundColor DarkGray
+if ($imageMatches.Count + $videoMatches.Count -gt 0) {
+    if ($imageMatches.Count + $videoMatches.Count -le 10) {
+        Write-Host "待删除文件列表:" -ForegroundColor Yellow
+        Write-Host ""
+        $imageMatches | ForEach-Object {
+            Write-Host "  📸 $($_.RelativePath)" -ForegroundColor DarkGray
+        }
+        $videoMatches | ForEach-Object {
+            Write-Host "  🎬 $($_.RelativePath)" -ForegroundColor DarkGray
+        }
+        Write-Host ""
     }
-    $videoMatches | ForEach-Object {
-        Write-Host "  🎬 $($_.RelativePath)" -ForegroundColor DarkGray
+    else {
+        Write-Host "待删除文件列表 (显示前10个):" -ForegroundColor Yellow
+        Write-Host ""
+        $imageMatches | Select-Object -First 10 | ForEach-Object {
+            Write-Host "  📸 $($_.RelativePath)" -ForegroundColor DarkGray
+        }
+        $videoMatches | Select-Object -First 10 | ForEach-Object {
+            Write-Host "  🎬 $($_.RelativePath)" -ForegroundColor DarkGray
+        }
+        Write-Host "  ... 还有 $($imageMatches.Count + $videoMatches.Count - 10) 个文件" -ForegroundColor DarkGray
+        Write-Host ""
     }
-    Write-Host ""
 }
-else {
-    Write-Host "待删除文件列表 (显示前10个):" -ForegroundColor Yellow
+
+# === 显示未转换文件列表（前10个） ===
+if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
+    Write-Host "未转换文件列表:" -ForegroundColor Yellow
     Write-Host ""
-    $imageMatches | Select-Object -First 10 | ForEach-Object {
-        Write-Host "  📸 $($_.RelativePath)" -ForegroundColor DarkGray
+    
+    # 未转换图片
+    if ($imageUnconverted.Count -gt 0) {
+        $imgUnconvertedToShow = if ($imageUnconverted.Count -le 10) { 
+            $imageUnconverted 
+        } else { 
+            $imageUnconverted | Select-Object -First 10 
+        }
+        $imgUnconvertedToShow | ForEach-Object {
+            $relPath = $_.FullName.Substring($Dir.Length + 1)
+            Write-Host "  📸 $relPath" -ForegroundColor DarkGray
+        }
+        if ($imageUnconverted.Count -gt 10) {
+            Write-Host "  ... 还有 $($imageUnconverted.Count - 10) 个未转换图片" -ForegroundColor DarkGray
+        }
     }
-    $videoMatches | Select-Object -First 10 | ForEach-Object {
-        Write-Host "  🎬 $($_.RelativePath)" -ForegroundColor DarkGray
+    
+    # 未转换视频
+    if ($videoUnconverted.Count -gt 0) {
+        $vidUnconvertedToShow = if ($videoUnconverted.Count -le 10) { 
+            $videoUnconverted 
+        } else { 
+            $videoUnconverted | Select-Object -First 10 
+        }
+        $vidUnconvertedToShow | ForEach-Object {
+            $relPath = $_.FullName.Substring($Dir.Length + 1)
+            Write-Host "  🎬 $relPath" -ForegroundColor DarkGray
+        }
+        if ($videoUnconverted.Count -gt 10) {
+            Write-Host "  ... 还有 $($videoUnconverted.Count - 10) 个未转换视频" -ForegroundColor DarkGray
+        }
     }
-    Write-Host "  ... 还有 $($imageMatches.Count + $videoMatches.Count - 10) 个文件" -ForegroundColor DarkGray
     Write-Host ""
 }
 
