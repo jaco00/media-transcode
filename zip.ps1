@@ -1,5 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 # zip.ps1 —— AVIF 批量压缩（断电安全 · 幂等 · 并行/顺序处理）
+# Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 param(
     [string]$SourcePath = "05.photo",      # 源目录
@@ -7,7 +8,7 @@ param(
     [string]$BackupDirName = "", # 备份目录
     [string[]]$IncludeDirs = @(),        # 只扫描 SourcePath 下的指定子目录（例如 '2023','2024'）。为空则扫描所有。
     [int]$MaxThreads = 8,                 # 并行处理的最大线程数。0 或 1 表示顺序处理。
-    [int]$HeicQuality = 75,              # HEIC/HEIF 转换质量 (0-100, NConvert)
+    [int]$HeicQuality = 75,              # HEIC/HEIF 转换质量 (0-100, NConvert)5
     [int]$AVIFJobs = 1,                   # AVIF 编码器内部使用的线程数 (--jobs)。在 PowerShell 并行模式下（MaxThreads > 1），强烈建议保持 1 以避免资源竞争。设为 0 或大于 1 适用于顺序处理。
     [bool]$ShowDetails = $false,            # 是否输出详细的执行命令 (CMD: ...)
     [string]$AvifColorOptions = "-y 444", # 新增：AVIF 附加颜色选项 (默认 -y 444, 移除 --cicp 以保留原图 ICC)
@@ -30,6 +31,51 @@ else {
 # ---------- 配置 ----------
 $imageExtensions = @(".jpg", ".jpeg", ".png", ".heic", ".heif")
 $videoExtensions = @(".mp4", ".mov", ".wmv", ".avi", ".mkv")
+
+function Resolve-ToolExe {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ExeName
+    )
+
+    # 尝试解析脚本目录
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    if (-not $scriptDir) {
+        $scriptDir = (Get-Location).Path
+    } 
+    # bin 目录
+    $binDir = Join-Path $scriptDir "bin"
+    $binExe = Join-Path $binDir $ExeName
+    
+
+    $toolPath = $null
+
+    # 先找 bin
+    if (Test-Path -LiteralPath $binExe) {
+        $toolPath = $binExe
+    }
+    # 再找 PATH
+    elseif ($cmd = Get-Command $ExeName -ErrorAction SilentlyContinue) {
+        $toolPath = $cmd.Path
+    }
+    else {
+        throw "未找到可用的 $ExeName（bin 或 PATH）"
+    }
+
+    # 测试可执行性
+    try {
+        & "$toolPath" -version *> $null
+        Write-Host "[命令测试] $toolPath 可执行 ✅" -ForegroundColor Green
+        return $toolPath
+    }
+    catch {
+        throw "$ExeName 找到路径 $toolPath，但无法运行"
+    }
+}
+
+$FFmpegExe = Resolve-ToolExe "ffmpeg.exe"
+$AvifEncExe = Resolve-ToolExe "avifenc.exe"
+$NConvertExe = Resolve-ToolExe "nconvert.exe"
 
 
 # 1. 源目录 (SourcePath)
@@ -131,79 +177,11 @@ if ($Mode -ne 2) {
 }
 
 
-
-
-# ========= 工具路径配置（换机器只改这里） =========
-$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$FFMPEG_HOME = ""  # 固定路径
-$AVIFENC_HOME = ""                        # 留空使用 PATH 中的 avifenc
-$NCONVERT_HOME = ""                      # 留空使用 PATH 中的 nconvert
-# ==================================================
-
 # **重要提示:**
 # 处理 HEIC/HEIF 文件现在依赖 NConvert (XnView).
 
-# 注入工具到脚本环境 (FFMPEG 不再用于 HEIC 转换，故不再强制检查)
-if ($FFMPEG_HOME -and (Test-Path "$FFMPEG_HOME\ffmpeg.exe")) {
-    $env:PATH = "$FFMPEG_HOME;$env:PATH"
-}
-elseif (Test-Path (Join-Path $scriptRoot "ffmpeg.exe")) {
-    # 检查脚本当前目录是否有 ffmpeg
-    $env:PATH = "$scriptRoot;$env:PATH"
-}
 
-$ffmpeg = "ffmpeg"
-$avifencExecutable = $null # 存储 avifenc.exe 的完整路径
-$avifencDir = $null        # 存储 avifenc.exe 所在的目录
-
-# 尝试找到 avifenc.exe 的完整路径
-if ($AVIFENC_HOME -and (Test-Path "$AVIFENC_HOME\avifenc.exe")) {
-    $env:PATH = "$AVIFENC_HOME;$env:PATH"
-    $avifencExecutable = Join-Path $AVIFENC_HOME "avifenc.exe"
-    $avifencDir = $AVIFENC_HOME
-}
-elseif (Test-Path (Join-Path $scriptRoot "avifenc.exe")) {
-    $avifencExecutable = Join-Path $scriptRoot "avifenc.exe"
-    $avifencDir = $scriptRoot
-    # 将脚本目录加入 PATH 以便并行进程继承
-    $env:PATH = "$scriptRoot;$env:PATH" 
-}
-elseif ($cmdInfo = Get-Command avifenc -ErrorAction SilentlyContinue) {
-    # 如果在 PATH 中找到，则获取其完整路径
-    $avifencExecutable = $cmdInfo.Path
-    $avifencDir = Split-Path -Path $avifencExecutable -Parent
-}
-
-$avifenc = if ($avifencExecutable) { $avifencExecutable } else { "avifenc" }
-
-$nconvertExecutable = $null # 用于存储 nconvert.exe 的完整路径
-$nconvertDir = $null        # 用于存储 nconvert.exe 所在的目录
 $psMajor = $PSVersionTable.PSVersion.Major 
-
-# 尝试找到 nconvert.exe 的完整路径
-if ($NCONVERT_HOME -and (Test-Path "$NCONVERT_HOME\nconvert.exe")) {
-    $env:PATH = "$NCONVERT_HOME;$env:PATH"
-    $nconvertExecutable = Join-Path $NCONVERT_HOME "nconvert.exe"
-    $nconvertDir = $NCONVERT_HOME
-}
-elseif (Test-Path (Join-Path $scriptRoot "nconvert.exe")) {
-    $nconvertExecutable = Join-Path $scriptRoot "nconvert.exe"
-    $nconvertDir = $scriptRoot
-    # 将脚本目录加入 PATH 以便并行进程继承
-    $env:PATH = "$scriptRoot;$env:PATH" 
-}
-elseif ($cmdInfo = Get-Command nconvert -ErrorAction SilentlyContinue) {
-    # 如果在 PATH 中找到，则获取其完整路径
-    $nconvertExecutable = $cmdInfo.Path
-    $nconvertDir = Split-Path -Path $nconvertExecutable -Parent
-}
-
-if (!$nconvertExecutable) {
-    Write-Host "警告: 找不到 nconvert。HEIC/HEIF 文件将无法处理。" -ForegroundColor Yellow
-}
-
-
-
 
 # AVIF 编码器通用选项，不再包含 --quiet，使用重定向实现静默
 $encoderOptions = @("--speed", "6") 
@@ -217,7 +195,7 @@ if ([System.IO.Path]::IsPathRooted($SourcePath)) {
     $InputRoot = [System.IO.Path]::GetFullPath($SourcePath)
 }
 else {
-    $InputRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot $SourcePath))
+    $InputRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $SourcePath))
 }
 Write-Host "扫描目录: $InputRoot" -ForegroundColor Cyan
 
@@ -231,7 +209,7 @@ else {
         $BackupRoot = [System.IO.Path]::GetFullPath($BackupDirName)
     }
     else {
-        $BackupRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot $BackupDirName))
+        $BackupRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BackupDirName))
     }
     $BackupEnabled = Test-Path $BackupRoot
 }
@@ -264,8 +242,6 @@ elseif (!$BackupEnabled) {
 
 
 # ---------- 扫描文件 ----------
-$imageExtensions = @(".jpg", ".jpeg", ".png", ".heic", ".heif")
-$videoExtensions = @(".mp4", ".mov", ".wmv", ".avi", ".mkv")
 
 $files = @()      # 图片列表
 $videoFiles = @() # 视频列表
@@ -401,7 +377,7 @@ Write-Host "==========================================================" -Foregro
 Write-Host ""
 Write-Host "====================== 执行确认 ======================" -ForegroundColor Yellow
 
-$confirm = $false
+
 do {
     # 使用 Read-Host 获取用户输入
     $response = Read-Host "输入 Y 继续处理，输入 N 退出脚本"
@@ -488,28 +464,16 @@ if ($Mode -eq 2) {
 }
 
 
-
-# ---------- 核心处理逻辑 (统一脚本块) ----------
-# 此脚本块同时用于并行和顺序模式
-# 它必须是纯粹的，不依赖外部作用域，所有依赖通过 param 传入
-# ---------- 子进程环境预处理 ----------
-# 避免在每张图片里反复拼接 PATH 导致 Runspace 环境膨胀
-if ($nconvertDir -and ($env:PATH -split ';' -notcontains $nconvertDir)) {
-    $env:PATH = "$nconvertDir;$env:PATH"
-}
-if ($avifencDir -and ($env:PATH -split ';' -notcontains $avifencDir)) {
-    $env:PATH = "$avifencDir;$env:PATH"
-}
-
 $processImageBlock = {
     param($file, $config, $progress)
-    
+        
     if ($null -eq $file) { return } # 安全检查
     
     $src = $file.FullName
     $rootPath = $config.InputRoot
     if ($null -eq $rootPath) { $rootPath = $InputRoot } # fallback for sequential
-    $rel = $src.Substring($rootPath.Length + 1)
+    
+    $rel = $src.Substring($rootPath.Length).TrimStart('\')
     $dir = Split-Path $rel -Parent
     $name = $file.Name
     $oldSize = $file.Length
@@ -541,10 +505,10 @@ $processImageBlock = {
             
             $isHEIF = $file.Extension -in @(".heic", ".heif")
             if ($isHEIF) {
-                Write-Host "  → 命令: nconvert -out avif -q $($config.HeicQuality) -keep_icc $src" -ForegroundColor White
+                Write-Host "  → 命令: $($config.NConvertExe) -out avif -q $($config.HeicQuality) -keep_icc $src" -ForegroundColor White
             }
             else {
-                Write-Host "  → 命令: avifenc -q $($config.Quality) $src $avifOut" -ForegroundColor White
+                Write-Host "  → 命令: $($config:AvifEncExe) -q $($config.Quality) $src $avifOut" -ForegroundColor White
             }
             
             Write-Host "  → 行为: 备份转换并删除源文件" -ForegroundColor Gray
@@ -566,9 +530,6 @@ $processImageBlock = {
         
         if ($isHEIF) {
             # ── HEIC/HEIF (NConvert) ──
-            if (!$config.nconvertExecutable) {
-                throw "无法处理 HEIC/HEIF 文件: 找不到 nconvert 命令。请安装 XnView/NConvert 或配置 \$NCONVERT_HOME。"
-            }
             
             # 构造 nconvert 参数
             $nconvertArgs = @("-out", "avif")
@@ -593,16 +554,16 @@ $processImageBlock = {
             $nconvertArgStr = "$($nconvertArgs -join ' ')"
 
             if ($config.ShowDetails) {
-                Write-Host "CMD: $($config.nconvertExecutable) $nconvertArgStr" -ForegroundColor Yellow
-                & $config.nconvertExecutable @nconvertArgs
+                Write-Host "CMD: $config.NConvertExe $nconvertArgStr" -ForegroundColor Yellow
+                &   $using:NConvertExe @nconvertArgs
             }
             else {
                 # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
-                $null = & $config.nconvertExecutable @nconvertArgs 2>&1
+                $null = & $using:NConvertExe @nconvertArgs 2>&1
             }
             
             if ($LASTEXITCODE -ne 0) { 
-                throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $($config.nconvertExecutable) $nconvertArgStr" 
+                throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $NConvertExe $nconvertArgStr" 
             }
             
         }
@@ -616,24 +577,29 @@ $processImageBlock = {
             $avifArgStr = "$($avifArgs -join ' ')"
 
             if ($config.ShowDetails) {
-                Write-Host "CMD: $($config.avifenc) $avifArgStr" -ForegroundColor DarkYellow
-                & $config.avifenc @avifArgs
+                Write-Host "CMD: $($config.AvifEncExe) $avifArgStr" -ForegroundColor DarkYellow
+                & $config.AvifEncExe @avifArgs
             }
             else {
                 # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
-                $null = & $config.avifenc @avifArgs 2>&1
+                $null = & $config.AvifEncExe @avifArgs 2>&1
             }
 
             if ($LASTEXITCODE -ne 0) { 
-                throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $($config.avifenc) $avifArgStr" 
+                throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $AvifEncExe $avifArgStr" 
             }
         }
 
-        # 3. 显示压缩率 (在删除前获取大小或使用预存大小)
+        # 3. 显示压缩率 (在删除前重新获取源文件大小，避免并发时 $file.Length 不准确)
+        # 重新获取源文件大小，因为并发时 $file.Length 可能不准确
+        $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
         $newSize = (Get-Item $avifOut).Length
-        if ($oldSize -gt 0) {
-            $ratio = [Math]::Round((1 - $newSize / $oldSize) * 100)
-            Write-Host "✔ $progress $rel  节省 $ratio%" -ForegroundColor Green
+        
+        if ($actualOldSize -gt 0) {
+            $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
+            $oldSizeKB = [Math]::Round($actualOldSize / 1KB, 1)
+            $newSizeKB = [Math]::Round($newSize / 1KB, 1)
+            Write-Host "✔ $progress $rel  源: ${oldSizeKB}KB → 新: ${newSizeKB}KB  节省 $ratio%" -ForegroundColor Green
         }
         else {
             Write-Host "✔ $progress $rel  已转换" -ForegroundColor Green
@@ -661,19 +627,22 @@ if ($Mode -ne 2 -and $files.Count -gt 0) {
     
     # 构造配置对象 (用于传递给并行/顺序脚本块)
     $scriptConfig = @{
-        InputRoot          = $InputRoot
-        BackupRoot         = $BackupRoot
-        nconvertExecutable = $nconvertExecutable
-        nconvertDir        = $nconvertDir
-        avifenc            = $avifenc
-        avifencDir         = $avifencDir
-        HeicQuality        = $HeicQuality
-        ShowDetails        = $ShowDetails
-        encoderOptions     = $encoderOptions
+        InputRoot      = $InputRoot
+        BackupRoot     = $BackupRoot
 
-        Quality            = $Quality
-        Mode               = $Mode
-        BackupEnabled      = ($BackupEnabled -and ($Mode -ne 1)) # Disable backup if Mode is 1
+        nconvertDir    = $nconvertDir
+        avifenc        = $avifenc
+        avifencDir     = $avifencDir
+        HeicQuality    = $HeicQuality
+        ShowDetails    = $ShowDetails
+        encoderOptions = $encoderOptions
+
+        Quality        = $Quality
+        Mode           = $Mode
+        BackupEnabled  = ($BackupEnabled -and ($Mode -ne 1)) # Disable backup if Mode is 1
+
+        AvifEncExe     = $AvifEncExe
+        NConvertExe    = $NConvertExe
     }
 
     if ($parallelEnabled) {
@@ -714,140 +683,137 @@ if ($Mode -ne 2 -and $videoFiles.Count -gt 0) {
     Write-Host ""
     Write-Host ">>> 开始处理视频 (顺序执行)..." -ForegroundColor Magenta
     
-    # 检查 ffmpeg 是否可用
-    if (!(Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
-        Write-Host "错误: 找不到 ffmpeg 命令，无法处理视频。请安装 FFmpeg 或配置 \$FFMPEG_HOME。" -ForegroundColor Red
-    }
-    else {
-        $i = 1
-        $totalVideos = $videoFiles.Count
-        foreach ($file in $videoFiles) {
-            $src = $file.FullName
-            $rootPath = $InputRoot
-            $rel = $src.Substring($rootPath.Length + 1)
-            $dir = Split-Path $rel -Parent
-            $name = $file.Name
-            $oldSize = $file.Length
-            $fileBaseName = [IO.Path]::GetFileNameWithoutExtension($name)
+    $i = 1
+    $totalVideos = $videoFiles.Count
+    foreach ($file in $videoFiles) {
+        $src = $file.FullName
+        $rootPath = $InputRoot
+        $rel = $src.Substring($InputRoot.Length).TrimStart('\')
+        $dir = Split-Path $rel -Parent
+        $name = $file.Name
+        $oldSize = $file.Length
+        $fileBaseName = [IO.Path]::GetFileNameWithoutExtension($name)
                 
-            $progress = "[$i/$totalVideos]"
+        $progress = "[$i/$totalVideos]"
                 
-            # 视频固定输出命名规则: name.h265.mp4
-            $targetName = "$fileBaseName.h265.mp4"
-            $finalOut = Join-Path $file.Directory.FullName $targetName
+        # 视频固定输出命名规则: name.h265.mp4
+        $targetName = "$fileBaseName.h265.mp4"
+        $finalOut = Join-Path $file.Directory.FullName $targetName
                 
-            # 再次检查目标是否存在 (避免扫描时的竞态或误判)
-            # 用户要求强制覆盖，故移除跳过逻辑
-            # if (Test-Path $finalOut) {
-            #    Write-Host "跳过已存在: $targetName" -ForegroundColor DarkGray
-            #    continue
-            # }
+        # 再次检查目标是否存在 (避免扫描时的竞态或误判)
+        # 用户要求强制覆盖，故移除跳过逻辑
+        # if (Test-Path $finalOut) {
+        #    Write-Host "跳过已存在: $targetName" -ForegroundColor DarkGray
+        #    continue
+        # }
     
-            # 路径构造 (仅当备份启用时使用 $BackupRoot)
-            $backupDir = $null
-            $backup = $null
-            if ($BackupEnabled -and ($Mode -ne 1)) {
-                # Disable backup if Mode is 1
-                $backupDir = Join-Path $BackupRoot $dir
-                $backup = Join-Path $backupDir $name
-            }
+        # 路径构造 (仅当备份启用时使用 $BackupRoot)
+        $backupDir = $null
+        $backup = $null
+        if ($BackupEnabled -and ($Mode -ne 1)) {
+            # Disable backup if Mode is 1
+            $backupDir = Join-Path $BackupRoot $dir
+            $backup = Join-Path $backupDir $name
+        }
         
-            Write-Host "$progress 正在处理视频: $rel" -ForegroundColor Cyan
+        Write-Host "$progress 正在处理视频: [$rel]" -ForegroundColor Cyan
     
-            try {
+        try {
                
 
-                # 1. 备份 (仅当备份功能启用时)
+            # 1. 备份 (仅当备份功能启用时)
+            if ($BackupEnabled -and ($Mode -ne 1)) {
+                # Disable backup if Mode is 1
+                New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+                Copy-Item $src $backup -Force
+            }
+    
+            # 2. 转换 (FFmpeg)
+            $ffmpegArgs = @("-hide_banner", "-i", $src)
+            $ffmpegArgs += @("-c:v", $Codec)
+                
+            if ($useGpu) {
+                $ffmpegArgs += @("-cq", $CQ)
+                $ffmpegArgs += @("-preset", "p4")
+            }
+            else {
+                $ffmpegArgs += @("-crf", $CRF)
+                $ffmpegArgs += @("-preset", "medium")
+            }
+
+            $ffmpegArgs += @("-c:a", "aac")
+            $ffmpegArgs += @("-movflags", "+faststart")
+            $ffmpegArgs += @("-pix_fmt", "yuv420p")
+
+            # 参数必须在输出文件名之前
+            if ($ShowDetails) {
+                # 详细模式不加 loglevel warning
+            }
+            else {
+                # 增加 -stats 以在 warning 级别下依然显示进度条
+                $ffmpegArgs += @("-loglevel", "warning", "-stats")
+                    
+                # 如果是 libx265 且为静默模式，抑制其内部 info 输出
+                if ($Codec -eq "libx265") {
+                    $ffmpegArgs += @("-x265-params", "log-level=error")
+                }
+            }
+
+            $ffmpegArgs += $finalOut
+            $ffmpegArgs += "-y"
+                
+            if ($ShowDetails) {
+                $cmd = "$FFmpegExe $($ffmpegArgs -join ' ')"
+                Write-Host "CMD: $cmd" -ForegroundColor Yellow
+            }
+                
+            # Dry-Run 模式：仅输出命令
+            if ($Mode -eq 9) {
+                Write-Host "[DRY-RUN] 处理视频: $rel" -ForegroundColor Cyan
                 if ($BackupEnabled -and ($Mode -ne 1)) {
                     # Disable backup if Mode is 1
-                    New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-                    Copy-Item $src $backup -Force
+                    Write-Host "  → 备份: $backup" -ForegroundColor Gray
                 }
-    
-                # 2. 转换 (FFmpeg)
-                $ffmpegArgs = @("-hide_banner", "-i", $src)
-                $ffmpegArgs += @("-c:v", $Codec)
+                Write-Host "  → 命令: $FFmpegExe $($ffmpegArgs -join ' ')" -ForegroundColor White
+                continue
+            }
+            else {
+                # 使用 & 符号调用命令，配合数组传参，能最稳健地处理空格
+                & $FFmpegExe @ffmpegArgs
                 
-                if ($useGpu) {
-                    $ffmpegArgs += @("-cq", $CQ)
-                    $ffmpegArgs += @("-preset", "p4")
-                }
-                else {
-                    $ffmpegArgs += @("-crf", $CRF)
-                    $ffmpegArgs += @("-preset", "medium")
+                if ($LASTEXITCODE -ne 0) {
+                    throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
                 }
 
-                $ffmpegArgs += @("-c:a", "aac")
-                $ffmpegArgs += @("-movflags", "+faststart")
-                $ffmpegArgs += @("-pix_fmt", "yuv420p")
-
-                # 参数必须在输出文件名之前
-                if ($ShowDetails) {
-                    # 详细模式不加 loglevel warning
-                }
-                else {
-                    # 增加 -stats 以在 warning 级别下依然显示进度条
-                    $ffmpegArgs += @("-loglevel", "warning", "-stats")
-                    
-                    # 如果是 libx265 且为静默模式，抑制其内部 info 输出
-                    if ($Codec -eq "libx265") {
-                        $ffmpegArgs += @("-x265-params", "log-level=error")
-                    }
-                }
-
-                $ffmpegArgs += $finalOut
-                $ffmpegArgs += "-y"
-                
-                if ($ShowDetails) {
-                    $cmd = "ffmpeg $($ffmpegArgs -join ' ')"
-                    Write-Host "CMD: $cmd" -ForegroundColor Yellow
-                }
-                
-                # Dry-Run 模式：仅输出命令
-                if ($Mode -eq 9) {
-                    Write-Host "[DRY-RUN] 处理视频: $rel" -ForegroundColor Cyan
-                    if ($BackupEnabled -and ($Mode -ne 1)) {
-                        # Disable backup if Mode is 1
-                        Write-Host "  → 备份: $backup" -ForegroundColor Gray
-                    }
-                    Write-Host "  → 命令: ffmpeg $($ffmpegArgs -join ' ')" -ForegroundColor White
-                    continue
-                }
-                else {
-                    # 使用 & 符号调用命令，配合数组传参，能最稳健地处理空格
-                    & "ffmpeg" @ffmpegArgs
-                
-                    if ($LASTEXITCODE -ne 0) {
-                        throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
-                    }
-
-                }
+            }
             
-                # 3. 显示压缩率
-                $newSize = (Get-Item $finalOut).Length
-                if ($oldSize -gt 0) {
-                    $ratio = [Math]::Round((1 - $newSize / $oldSize) * 100)
-                    Write-Host "✔ $progress $rel  节省 $ratio%" -ForegroundColor Green
-                }
+            # 3. 显示压缩率 (重新获取源文件大小以确保准确)
+            $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
+            $newSize = (Get-Item $finalOut).Length
+            if ($actualOldSize -gt 0) {
+                $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
+                $oldSizeMB = [Math]::Round($actualOldSize / 1MB, 2)
+                $newSizeMB = [Math]::Round($newSize / 1MB, 2)
+                Write-Host "✔ $progress $rel  源: ${oldSizeMB}MB → 新: ${newSizeMB}MB  节省 $ratio%" -ForegroundColor Green
+            }
 
-                # 4. 删除/保留源文件
-                if ($Mode -eq 0) {
-                    Remove-Item $src -Force
-                }
-                elseif ($Mode -eq 1) {
-                    Write-Host "💾 $progress $rel  已保留源文件 (共存模式 - 跳过备份)" -ForegroundColor Blue
-                }
-                else {
-                    Write-Host "✔ $progress $rel  已转换 (无备份)" -ForegroundColor Green
-                }
+            # 4. 删除/保留源文件
+            if ($Mode -eq 0) {
+                Remove-Item $src -Force
+            }
+            elseif ($Mode -eq 1) {
+                Write-Host "💾 $progress $rel  已保留源文件 (共存模式 - 跳过备份)" -ForegroundColor Blue
+            }
+            else {
+                Write-Host "✔ $progress $rel  已转换 (无备份)" -ForegroundColor Green
+            }
                 
-                $i++
-            }
-            catch {
-                # 清理失败
-                if (Test-Path $finalOut) { Remove-Item $finalOut -Force -ErrorAction SilentlyContinue }
-                Write-Host "✖ 视频处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
-            }
+            $i++
+        }
+        catch {
+            # 清理失败
+            if (Test-Path $finalOut) { Remove-Item $finalOut -Force -ErrorAction SilentlyContinue }
+            Write-Host "✖ 视频处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
         }
     }
 }
