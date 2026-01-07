@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-# clean.ps1 —— 清理已压缩的源文件（扫描并删除已转换的源文件）
+# clean_optimized.ps1 —— 清理已压缩的源文件（扫描并删除已转换的源文件）
 
 param(
     [Parameter(Mandatory = $true)]
@@ -20,6 +20,7 @@ $imageDstExt = ".avif"
 
 $videoSrcExt = @(".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv")
 $videoDstSuffix = ".h265.mp4"
+$videoDstExt = $videoDstSuffix.ToLowerInvariant() # 统一使用小写后缀进行查找
 
 Write-Host ""
 Write-Host "====================== 扫描配置 ======================" -ForegroundColor Yellow
@@ -31,19 +32,21 @@ Write-Host ""
 # 扫描文件
 Write-Host "正在扫描文件..." -ForegroundColor Cyan
 
+# 快速获取所有文件对象
 $allFiles = Get-ChildItem -Path $Dir -Recurse -File
 
-# 建立索引：按目录+基名分组
+# 建立索引：按目录+基名分组 (此步骤已是高效的)
 $filesByDirAndBase = @{}
 foreach ($f in $allFiles) {
     $key = "$($f.DirectoryName)\$($f.BaseName)"
     if (-not $filesByDirAndBase.ContainsKey($key)) { 
         $filesByDirAndBase[$key] = @{} 
     }
+    # 使用小写扩展名作为键
     $filesByDirAndBase[$key][$f.Extension.ToLowerInvariant()] = $f
 }
 
-Write-Host "正在分析文件..." -ForegroundColor Cyan
+Write-Host "正在分析文件 (优化后的单次遍历)..." -ForegroundColor Cyan
 
 # 使用 List<T> 替代 += 提升性能
 $imageMatches = [System.Collections.Generic.List[object]]::new()
@@ -51,61 +54,80 @@ $videoMatches = [System.Collections.Generic.List[object]]::new()
 $imageUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 $videoUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 
-# 在匹配时直接累加字节数，避免后续再遍历
+# 在匹配时直接累加字节数
 $imgSrcBytes = 0L
 $imgDstBytes = 0L
 $vidSrcBytes = 0L
 $vidDstBytes = 0L
 
-foreach ($fileMap in $filesByDirAndBase.Values) {
-    # 图片匹配：如果存在 .avif
-    if ($fileMap.ContainsKey($imageDstExt)) {
-        $dst = $fileMap[$imageDstExt]
-        $src = $fileMap.Keys | Where-Object { $_ -ne $imageDstExt } | ForEach-Object { $fileMap[$_] } | Where-Object { $imageSrcExt -contains $_.Extension.ToLowerInvariant() } | Select-Object -First 1
+# ----------------------------------------------------
+# 关键优化区域：单次高效遍历文件组
+# ----------------------------------------------------
+foreach ($group in $filesByDirAndBase.Values) {
+    # 查找所有源文件和目标文件
+    $srcImagesInGroup = @()
+    $srcVideosInGroup = @()
+    $dstImage = $null
+    $dstVideo = $null
+
+    foreach ($ext in $group.Keys) {
+        $file = $group[$ext]
+        
+        if ($ext -eq $imageDstExt) { # .avif
+            $dstImage = $file
+        } elseif ($ext -eq $videoDstExt) { # .h265.mp4
+            $dstVideo = $file
+        } elseif ($imageSrcExt -contains $ext) {
+            $srcImagesInGroup += $file
+        } elseif ($videoSrcExt -contains $ext) {
+            $srcVideosInGroup += $file
+        }
+    }
+
+    # 1. 处理图片匹配 (已转换)
+    if ($dstImage) {
+        # 优化: 找到任意一个匹配的源文件作为待删除对象
+        $src = $srcImagesInGroup | Select-Object -First 1
         if ($src) {
             $imageMatches.Add([pscustomobject]@{
                 Src = $src
-                Dst = $dst
+                Dst = $dstImage
                 RelativePath = $src.FullName.Substring($Dir.Length + 1)
             })
             $imgSrcBytes += $src.Length
-            $imgDstBytes += $dst.Length
+            $imgDstBytes += $dstImage.Length
         }
     }
-
-    # 视频匹配：如果存在 .h265.mp4
-    $dstVideoKey = $videoDstSuffix
-    if ($fileMap.ContainsKey($dstVideoKey)) {
-        $dst = $fileMap[$dstVideoKey]
-        $src = $fileMap.Keys | Where-Object { $_ -ne $dstVideoKey } | ForEach-Object { $fileMap[$_] } | Where-Object { $videoSrcExt -contains $_.Extension.ToLowerInvariant() } | Select-Object -First 1
+    
+    # 2. 处理视频匹配 (已转换)
+    if ($dstVideo) {
+        # 优化: 找到任意一个匹配的源文件作为待删除对象
+        $src = $srcVideosInGroup | Select-Object -First 1
         if ($src) {
             $videoMatches.Add([pscustomobject]@{
                 Src = $src
-                Dst = $dst
+                Dst = $dstVideo
                 RelativePath = $src.FullName.Substring($Dir.Length + 1)
             })
             $vidSrcBytes += $src.Length
-            $vidDstBytes += $dst.Length
+            $vidDstBytes += $dstVideo.Length
         }
     }
 
-    # 未转换图片
-    $srcImg = $fileMap.Keys | ForEach-Object { $fileMap[$_] } | Where-Object { $imageSrcExt -contains $_.Extension.ToLowerInvariant() }
-    foreach ($s in $srcImg) {
-        if (-not $fileMap.ContainsKey($imageDstExt)) { 
-            $imageUnconverted.Add($s) 
-        }
+    # 3. 处理未转换文件 (排除已匹配的源文件，避免重复)
+    # 未转换图片: 如果组内有图片源文件，但没有 .avif 目标
+    if (-not $dstImage) {
+        # 修复：显式转换为 FileInfo 数组
+        $imageUnconverted.AddRange([System.IO.FileInfo[]]$srcImagesInGroup)
     }
-
-    # 未转换视频
-    $srcVid = $fileMap.Keys | ForEach-Object { $fileMap[$_] } | Where-Object { $videoSrcExt -contains $_.Extension.ToLowerInvariant() }
-    foreach ($s in $srcVid) {
-        if (-not $fileMap.ContainsKey($dstVideoKey)) { 
-            $videoUnconverted.Add($s) 
-        }
+    
+    # 未转换视频: 如果组内有视频源文件，但没有 .h265.mp4 目标
+    if (-not $dstVideo) {
+        # 修复：显式转换为 FileInfo 数组
+        $videoUnconverted.AddRange([System.IO.FileInfo[]]$srcVideosInGroup)
     }
 }
-
+# ----------------------------------------------------
 
 # 辅助函数：格式化文件大小
 function Format-Size {
@@ -141,17 +163,13 @@ $vidSavedPercent = if ($vidSrcSize -gt 0) {
 } else { 0 }
 
 # 未转换的文件统计
-if ($imageUnconverted.Count -gt 0) {
-    $imgUnconvertedSize = ($imageUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
-} else {
-    $imgUnconvertedSize = 0
-}
+$imgUnconvertedSize = if ($imageUnconverted.Count -gt 0) {
+    ($imageUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
+} else { 0 }
 
-if ($videoUnconverted.Count -gt 0) {
-    $vidUnconvertedSize = ($videoUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
-} else {
-    $vidUnconvertedSize = 0
-}
+$vidUnconvertedSize = if ($videoUnconverted.Count -gt 0) {
+    ($videoUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
+} else { 0 }
 
 $totalSrcSize = $imgSrcSize + $vidSrcSize
 $totalDstSize = $imgDstSize + $vidDstSize
@@ -169,16 +187,16 @@ Write-Host ""
 Write-Host "📸 图片文件" -ForegroundColor Cyan
 if ($imageMatches.Count -gt 0) {
     Write-Host "  已压缩: $($imageMatches.Count) 张" -ForegroundColor White
-    Write-Host "    原始大小: $(Format-Size $imgSrcSize)" -ForegroundColor Gray
-    Write-Host "    压缩后大小: $(Format-Size $imgDstSize)" -ForegroundColor Gray
-    Write-Host "    节省空间: $(Format-Size $imgSavedSize) ($imgSavedPercent%)" -ForegroundColor Green
+    Write-Host "  原始大小: $(Format-Size $imgSrcSize)" -ForegroundColor Gray
+    Write-Host "  压缩后大小: $(Format-Size $imgDstSize)" -ForegroundColor Gray
+    Write-Host "  节省空间: $(Format-Size $imgSavedSize) ($imgSavedPercent%)" -ForegroundColor Green
 } else {
     Write-Host "  已压缩: 0 张" -ForegroundColor DarkGray
 }
 
 if ($imageUnconverted.Count -gt 0) {
     Write-Host "  未转换: $($imageUnconverted.Count) 张" -ForegroundColor Yellow
-    Write-Host "    总大小: $(Format-Size $imgUnconvertedSize)" -ForegroundColor Gray
+    Write-Host "  总大小: $(Format-Size $imgUnconvertedSize)" -ForegroundColor Gray
 } else {
     Write-Host "  未转换: 0 张" -ForegroundColor DarkGray
 }
@@ -188,16 +206,16 @@ Write-Host ""
 Write-Host "🎬 视频文件" -ForegroundColor Cyan
 if ($videoMatches.Count -gt 0) {
     Write-Host "  已压缩: $($videoMatches.Count) 个" -ForegroundColor White
-    Write-Host "    原始大小: $(Format-Size $vidSrcSize)" -ForegroundColor Gray
-    Write-Host "    压缩后大小: $(Format-Size $vidDstSize)" -ForegroundColor Gray
-    Write-Host "    节省空间: $(Format-Size $vidSavedSize) ($vidSavedPercent%)" -ForegroundColor Green
+    Write-Host "  原始大小: $(Format-Size $vidSrcSize)" -ForegroundColor Gray
+    Write-Host "  压缩后大小: $(Format-Size $vidDstSize)" -ForegroundColor Gray
+    Write-Host "  节省空间: $(Format-Size $vidSavedSize) ($vidSavedPercent%)" -ForegroundColor Green
 } else {
     Write-Host "  已压缩: 0 个" -ForegroundColor DarkGray
 }
 
 if ($videoUnconverted.Count -gt 0) {
     Write-Host "  未转换: $($videoUnconverted.Count) 个" -ForegroundColor Yellow
-    Write-Host "    总大小: $(Format-Size $vidUnconvertedSize)" -ForegroundColor Gray
+    Write-Host "  总大小: $(Format-Size $vidUnconvertedSize)" -ForegroundColor Gray
 } else {
     Write-Host "  未转换: 0 个" -ForegroundColor DarkGray
 }
@@ -221,30 +239,25 @@ else {
 }
 
 # === 显示文件列表（前10个） ===
-if ($imageMatches.Count + $videoMatches.Count -gt 0) {
-    if ($imageMatches.Count + $videoMatches.Count -le 10) {
-        Write-Host "待删除文件列表:" -ForegroundColor Yellow
-        Write-Host ""
-        $imageMatches | ForEach-Object {
-            Write-Host "  📸 $($_.RelativePath)" -ForegroundColor DarkGray
-        }
-        $videoMatches | ForEach-Object {
-            Write-Host "  🎬 $($_.RelativePath)" -ForegroundColor DarkGray
-        }
-        Write-Host ""
+$allMatches = $imageMatches + $videoMatches
+
+if ($allMatches.Count -le 10) {
+    Write-Host "待删除文件列表:" -ForegroundColor Yellow
+    Write-Host ""
+    $allMatches | ForEach-Object {
+        # 使用 .Extension 属性检查是否是图片或视频源文件
+        Write-Host "  $(if ($imageSrcExt -contains $_.Src.Extension.ToLowerInvariant()) {'📸'} else {'🎬'}) $($_.RelativePath)" -ForegroundColor DarkGray
     }
-    else {
-        Write-Host "待删除文件列表 (显示前10个):" -ForegroundColor Yellow
-        Write-Host ""
-        $imageMatches | Select-Object -First 10 | ForEach-Object {
-            Write-Host "  📸 $($_.RelativePath)" -ForegroundColor DarkGray
-        }
-        $videoMatches | Select-Object -First 10 | ForEach-Object {
-            Write-Host "  🎬 $($_.RelativePath)" -ForegroundColor DarkGray
-        }
-        Write-Host "  ... 还有 $($imageMatches.Count + $videoMatches.Count - 10) 个文件" -ForegroundColor DarkGray
-        Write-Host ""
+    Write-Host ""
+}
+else {
+    Write-Host "待删除文件列表 (显示前10个):" -ForegroundColor Yellow
+    Write-Host ""
+    $allMatches | Select-Object -First 10 | ForEach-Object {
+        Write-Host "  $(if ($imageSrcExt -contains $_.Src.Extension.ToLowerInvariant()) {'📸'} else {'🎬'}) $($_.RelativePath)" -ForegroundColor DarkGray
     }
+    Write-Host "  ... 还有 $($allMatches.Count - 10) 个文件" -ForegroundColor DarkGray
+    Write-Host ""
 }
 
 # === 显示未转换文件列表（前10个） ===
@@ -254,11 +267,7 @@ if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
     
     # 未转换图片
     if ($imageUnconverted.Count -gt 0) {
-        $imgUnconvertedToShow = if ($imageUnconverted.Count -le 10) { 
-            $imageUnconverted 
-        } else { 
-            $imageUnconverted | Select-Object -First 10 
-        }
+        $imgUnconvertedToShow = $imageUnconverted | Select-Object -First 10
         $imgUnconvertedToShow | ForEach-Object {
             $relPath = $_.FullName.Substring($Dir.Length + 1)
             Write-Host "  📸 $relPath" -ForegroundColor DarkGray
@@ -270,11 +279,7 @@ if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
     
     # 未转换视频
     if ($videoUnconverted.Count -gt 0) {
-        $vidUnconvertedToShow = if ($videoUnconverted.Count -le 10) { 
-            $videoUnconverted 
-        } else { 
-            $videoUnconverted | Select-Object -First 10 
-        }
+        $vidUnconvertedToShow = $videoUnconverted | Select-Object -First 10
         $vidUnconvertedToShow | ForEach-Object {
             $relPath = $_.FullName.Substring($Dir.Length + 1)
             Write-Host "  🎬 $relPath" -ForegroundColor DarkGray
@@ -296,11 +301,11 @@ $confirm = $null
 do {
     $response = Read-Host "是否清理所有已压缩的源文件？(y/n)"
     
-    if ($response -eq "y" -or $response -eq "Y") {
+    if ($response -match "^[yY]$") {
         $confirm = $true
         break
     }
-    elseif ($response -eq "n" -or $response -eq "N") {
+    elseif ($response -match "^[nN]$") {
         $confirm = $false
         break
     }
@@ -322,20 +327,7 @@ Write-Host "正在删除文件..." -ForegroundColor Cyan
 $deletedCount = 0
 $errorCount = 0
 
-# 删除图片
-$imageMatches | ForEach-Object {
-    try {
-        Remove-Item -LiteralPath $_.Src.FullName -Force -ErrorAction Stop
-        $deletedCount++
-    }
-    catch {
-        Write-Host "  ✖ 删除失败: $($_.RelativePath) - $($_.Exception.Message)" -ForegroundColor Red
-        $errorCount++
-    }
-}
-
-# 删除视频
-$videoMatches | ForEach-Object {
+$allMatches | ForEach-Object {
     try {
         Remove-Item -LiteralPath $_.Src.FullName -Force -ErrorAction Stop
         $deletedCount++
