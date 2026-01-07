@@ -38,12 +38,19 @@ $allFiles = Get-ChildItem -Path $Dir -Recurse -File
 # 建立索引：按目录+基名分组 (此步骤已是高效的)
 $filesByDirAndBase = @{}
 foreach ($f in $allFiles) {
-    $key = "$($f.DirectoryName)\$($f.BaseName)"
+    # 提取基名和扩展名，特殊处理视频目标后缀 .h265.mp4
+    $fExt = $f.Extension.ToLowerInvariant()
+    $fBase = $f.BaseName
+    if ($f.Name.EndsWith($videoDstSuffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $fExt = $videoDstExt
+        $fBase = $f.Name.Substring(0, $f.Name.Length - $videoDstSuffix.Length)
+    }
+
+    $key = Join-Path $f.DirectoryName $fBase
     if (-not $filesByDirAndBase.ContainsKey($key)) { 
         $filesByDirAndBase[$key] = @{} 
     }
-    # 使用小写扩展名作为键
-    $filesByDirAndBase[$key][$f.Extension.ToLowerInvariant()] = $f
+    $filesByDirAndBase[$key][$fExt] = $f
 }
 
 Write-Host "正在分析文件 (优化后的单次遍历)..." -ForegroundColor Cyan
@@ -73,13 +80,18 @@ foreach ($group in $filesByDirAndBase.Values) {
     foreach ($ext in $group.Keys) {
         $file = $group[$ext]
         
-        if ($ext -eq $imageDstExt) { # .avif
+        if ($ext -eq $imageDstExt) {
+            # .avif
             $dstImage = $file
-        } elseif ($ext -eq $videoDstExt) { # .h265.mp4
+        }
+        elseif ($ext -eq $videoDstExt) {
+            # .h265.mp4
             $dstVideo = $file
-        } elseif ($imageSrcExt -contains $ext) {
+        }
+        elseif ($imageSrcExt -contains $ext) {
             $srcImagesInGroup += $file
-        } elseif ($videoSrcExt -contains $ext) {
+        }
+        elseif ($videoSrcExt -contains $ext) {
             $srcVideosInGroup += $file
         }
     }
@@ -90,10 +102,10 @@ foreach ($group in $filesByDirAndBase.Values) {
         $src = $srcImagesInGroup | Select-Object -First 1
         if ($src) {
             $imageMatches.Add([pscustomobject]@{
-                Src = $src
-                Dst = $dstImage
-                RelativePath = $src.FullName.Substring($Dir.Length + 1)
-            })
+                    Src          = $src
+                    Dst          = $dstImage
+                    RelativePath = $src.FullName.Substring($Dir.Length + 1)
+                })
             $imgSrcBytes += $src.Length
             $imgDstBytes += $dstImage.Length
         }
@@ -105,10 +117,10 @@ foreach ($group in $filesByDirAndBase.Values) {
         $src = $srcVideosInGroup | Select-Object -First 1
         if ($src) {
             $videoMatches.Add([pscustomobject]@{
-                Src = $src
-                Dst = $dstVideo
-                RelativePath = $src.FullName.Substring($Dir.Length + 1)
-            })
+                    Src          = $src
+                    Dst          = $dstVideo
+                    RelativePath = $src.FullName.Substring($Dir.Length + 1)
+                })
             $vidSrcBytes += $src.Length
             $vidDstBytes += $dstVideo.Length
         }
@@ -153,30 +165,35 @@ $imgDstSize = $imgDstBytes
 $imgSavedSize = $imgSrcSize - $imgDstSize
 $imgSavedPercent = if ($imgSrcSize -gt 0) { 
     [math]::Round((1 - $imgDstSize / $imgSrcSize) * 100, 1) 
-} else { 0 }
+}
+else { 0 }
 
 $vidSrcSize = $vidSrcBytes
 $vidDstSize = $vidDstBytes
 $vidSavedSize = $vidSrcSize - $vidDstSize
 $vidSavedPercent = if ($vidSrcSize -gt 0) { 
     [math]::Round((1 - $vidDstSize / $vidSrcSize) * 100, 1) 
-} else { 0 }
+}
+else { 0 }
 
 # 未转换的文件统计
 $imgUnconvertedSize = if ($imageUnconverted.Count -gt 0) {
     ($imageUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
-} else { 0 }
+}
+else { 0 }
 
 $vidUnconvertedSize = if ($videoUnconverted.Count -gt 0) {
     ($videoUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
-} else { 0 }
+}
+else { 0 }
 
 $totalSrcSize = $imgSrcSize + $vidSrcSize
 $totalDstSize = $imgDstSize + $vidDstSize
 $totalSavedSize = $totalSrcSize - $totalDstSize
 $totalSavedPercent = if ($totalSrcSize -gt 0) { 
     [math]::Round((1 - $totalDstSize / $totalSrcSize) * 100, 1) 
-} else { 0 }
+}
+else { 0 }
 
 # === 美化输出 ===
 Write-Host ""
@@ -190,14 +207,16 @@ if ($imageMatches.Count -gt 0) {
     Write-Host "  原始大小: $(Format-Size $imgSrcSize)" -ForegroundColor Gray
     Write-Host "  压缩后大小: $(Format-Size $imgDstSize)" -ForegroundColor Gray
     Write-Host "  节省空间: $(Format-Size $imgSavedSize) ($imgSavedPercent%)" -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "  已压缩: 0 张" -ForegroundColor DarkGray
 }
 
 if ($imageUnconverted.Count -gt 0) {
     Write-Host "  未转换: $($imageUnconverted.Count) 张" -ForegroundColor Yellow
     Write-Host "  总大小: $(Format-Size $imgUnconvertedSize)" -ForegroundColor Gray
-} else {
+}
+else {
     Write-Host "  未转换: 0 张" -ForegroundColor DarkGray
 }
 Write-Host ""
@@ -209,14 +228,16 @@ if ($videoMatches.Count -gt 0) {
     Write-Host "  原始大小: $(Format-Size $vidSrcSize)" -ForegroundColor Gray
     Write-Host "  压缩后大小: $(Format-Size $vidDstSize)" -ForegroundColor Gray
     Write-Host "  节省空间: $(Format-Size $vidSavedSize) ($vidSavedPercent%)" -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "  已压缩: 0 个" -ForegroundColor DarkGray
 }
 
 if ($videoUnconverted.Count -gt 0) {
     Write-Host "  未转换: $($videoUnconverted.Count) 个" -ForegroundColor Yellow
     Write-Host "  总大小: $(Format-Size $vidUnconvertedSize)" -ForegroundColor Gray
-} else {
+}
+else {
     Write-Host "  未转换: 0 个" -ForegroundColor DarkGray
 }
 Write-Host ""

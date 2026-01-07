@@ -85,59 +85,41 @@ if (-not $PSBoundParameters.ContainsKey('SourcePath')) {
 }
 
 # 2. 模式选择 (提前到此处，以便根据模式决定后续询问内容)
-Write-Host ""
-Write-Host "====================== 模式选择 ======================" -ForegroundColor Yellow
-Write-Host "请选择处理模式：" -ForegroundColor White
-Write-Host "  [回车] 或 [0]: 正常模式 (备份 → 转换 → 删除源)" -ForegroundColor Cyan
-Write-Host "  [1]: 比对模式 (备份 → 转换 → 保留源)" -ForegroundColor Cyan
-Write-Host "  [2]: 清理模式 (源文件移动到备份目录 - 需转换文件已存在)" -ForegroundColor Magenta
-Write-Host "  [9]: Dry-Run 模式 (仅显示将执行的操作，不实际执行)" -ForegroundColor Yellow
-Write-Host "========================================================" -ForegroundColor Yellow
 $Mode = $null
-do {
-    $response = Read-Host "输入模式 (0/1/2/9，默认回车=0)"
-    if ([string]::IsNullOrEmpty($response) -or $response -ceq "0") { $Mode = 0 }
-    elseif ($response -ceq "1") { $Mode = 1 }
-    elseif ($response -ceq "2") { $Mode = 2 }
-    elseif ($response -ceq "9") { $Mode = 9 }
-    
-    if ($Mode -ne $null) { break }
-    else { Write-Host "输入无效，请重新输入 (0, 1, 2, 9)。" -ForegroundColor Red }
-} while ($true)
-
-# 3. 询问目录信息 (Mode 2 强制要求备份目录)
-if ($Mode -eq 2) {
-    # 清理模式：必须提供备份目录
-    if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
-        do {
-            $InputBackupDir = Read-Host "请输入备份目录名称 (清理模式必填)"
-            if ([string]::IsNullOrWhiteSpace($InputBackupDir)) {
-                Write-Host "错误: 清理模式必须提供备份目录，否则无法移动源文件。" -ForegroundColor Red
-            }
-        } while ([string]::IsNullOrWhiteSpace($InputBackupDir))
-        $BackupDirName = $InputBackupDir
-    }
+if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
+    $Mode = 1
+    Write-Host "对比模式 (转换 → 保留源)" -ForegroundColor Cyan
 }
 else {
-    # 其他模式：备份目录可选
-    if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
-        $InputBackupDir = Read-Host "请输入备份目录名称 [默认: $BackupDirName]"
-        $BackupDirName = if ([string]::IsNullOrWhiteSpace($InputBackupDir)) { $BackupDirName } else { $InputBackupDir }
+    $Mode = 0
+    Write-Host "备份模式 (转换 → 移动源到备份目录)" -ForegroundColor Cyan
+   
+    if ([System.IO.Path]::IsPathRooted($BackupDirName)) {
+        $BackupRoot = [System.IO.Path]::GetFullPath($BackupDirName)
     }
+    else {
+        $BackupRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BackupDirName))
+    }
+    if (-not (Test-Path $BackupRoot)) {
+        Write-Host "❌ 错误：备份目录不存在 -> $BackupRoot" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "📦 备份目录：$BackupRoot" -ForegroundColor Cyan
 }
+
 
 # 扫描子目录
 $InputInclude = Read-Host "请输入扫描子目录 (逗号分隔，如 2023,2024；留空则全扫) [默认: 全部扫描]"
 $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
 
-# 处理类型选择 (清理模式也需要知道处理图片还是视频)
+# 处理类型选择
 $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
 if ([string]::IsNullOrWhiteSpace($InputProcessType)) { $ProcessType = 0 }
 elseif ($InputProcessType -match '^[012]$') { $ProcessType = [int]$InputProcessType }
 else { $ProcessType = 0 }
 
-# 4. 询问压制参数 (仅当不是清理模式时)
-if ($Mode -ne 2) {
+# 4. 询问压制参数
+if ($true) {
     # 最大并行线程
     $InputMaxThreads = Read-Host "请输入并行处理线程数 (MaxThreads) [默认: $MaxThreads]"
     $MaxThreads = if ([string]::IsNullOrWhiteSpace($InputMaxThreads)) { $MaxThreads } else { [int]$InputMaxThreads }
@@ -199,26 +181,6 @@ else {
 }
 Write-Host "扫描目录: $InputRoot" -ForegroundColor Cyan
 
-
-if ([string]::IsNullOrWhiteSpace($BackupDirName)) {
-    $BackupRoot = $null
-    $BackupEnabled = $false
-}
-else {
-    if ([System.IO.Path]::IsPathRooted($BackupDirName)) {
-        $BackupRoot = [System.IO.Path]::GetFullPath($BackupDirName)
-    }
-    else {
-        $BackupRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BackupDirName))
-    }
-    $BackupEnabled = Test-Path $BackupRoot
-}
-
-# 共存模式 (Mode 1) 不需要备份
-if ($Mode -eq 1) {
-    $BackupEnabled = $false
-}
-
 # 打印过滤信息
 if ($IncludeDirs.Count -gt 0) {
     Write-Host "子目录过滤器已启用: $($IncludeDirs -join ', ')" -ForegroundColor Yellow
@@ -229,17 +191,6 @@ else {
 
 # 检查 PowerShell 版本是否支持并行
 $parallelEnabled = ($PSVersionTable.PSVersion.Major -ge 7) -and ($MaxThreads -gt 1)
-
-
-# ---------- 准备目录 ----------
-# 检查备份目录是否存在
-if ([string]::IsNullOrWhiteSpace($BackupDirName)) {
-    # 未指定备份，静默跳过
-}
-elseif (!$BackupEnabled) {
-    Write-Host "警告: 备份目录 [$BackupDirName] 不存在，将跳过备份步骤并仅保留源文件。" -ForegroundColor Yellow
-}
-
 
 # ---------- 扫描文件 ----------
 
@@ -334,22 +285,10 @@ else {
 
 
 
-# 此处逻辑已移至脚本开头。保留变量声明以防后续引用报错。
-$modeText = switch ($Mode) {
-    0 { "正常模式 (Mode 0): 备份 → 转换 → 删除源" }
-    1 { "共存模式 (Mode 1): 转换 → 保留源 (跳过备份)" }
-    2 { "清理模式 (Mode 2): 归档到备份目录" }
-    9 { "Dry-Run 模式 (Mode 9): 仅显示操作" }
-}
-Write-Host "选择模式: $modeText" -ForegroundColor Magenta
-
 Write-Host "====================== 当前配置摘要 ======================" -ForegroundColor Yellow
 Write-Host " 源目录: $InputRoot" -ForegroundColor Green
-if ($BackupEnabled) {
+if ($Mode -eq 0) {
     Write-Host " 备份目录: $BackupRoot" -ForegroundColor Green
-}
-else {
-    Write-Host " 备份目录: $BackupDirName (目录不存在 - 将跳过备份)" -ForegroundColor Red
 }
 Write-Host " 扫描子目录: $($IncludeDirs -join ', ')" -ForegroundColor Green
 Write-Host " 最大线程: $MaxThreads" -ForegroundColor Green
@@ -363,11 +302,11 @@ else {
 }
 Write-Host " 详细输出/静默: $(if ($ShowDetails) {'详细输出 (非静默)'} else {'静默模式'})" -ForegroundColor Green
 
-if ($parallelEnabled -and ($Mode -ne 2)) {
+if ($parallelEnabled) {
     # 提示用户多线程处于活动状态
     Write-Host "处理模式: 并行 ($MaxThreads 线程，父进程 PID: $pid)。AVIFjobs: $AVIFJobs" -ForegroundColor Cyan
 }
-elseif ($Mode -ne 2) {
+else {
     
     Write-Host "处理模式: 顺序 (PS 版本: $psMajor, MaxThreads: $MaxThreads)。AVIFjobs: $AVIFJobs。$quietStatus" -ForegroundColor Cyan
 }
@@ -385,7 +324,6 @@ do {
     $responseUpper = $response.ToUpper()
     
     if ($responseUpper -ceq "Y") {
-        $confirm = $true
         break
     }
     elseif ($responseUpper -ceq "N") {
@@ -400,68 +338,6 @@ do {
 Write-Host "继续批量处理..." -ForegroundColor Green
 
 
-# --- Mode 2 清理逻辑 (移至归档目录) ---
-if ($Mode -eq 2) {
-    Write-Host ""
-    Write-Host "====================== Mode 2: 归档源文件到备份 ======================" -ForegroundColor Yellow
-    Write-Host "将检查文件是否已转换，若存在则将源文件移动到备份目录..." -ForegroundColor Cyan
-
-    $cleanupCount = 0
-    $allFilesToClean = $files + $videoFiles
-    
-    foreach ($file in $allFilesToClean) {
-        $src = $file.FullName
-        $rel = $src.Substring($InputRoot.Length + 1)
-        $dir = Split-Path $rel -Parent
-        $name = $file.Name
-        $ext = $file.Extension.ToLower()
-        
-        # 寻找对应的转换后文件
-        $targetOut = $null
-        if ($ext -in $imageExtensions) {
-            $targetOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".avif")
-        }
-        elseif ($ext -in $videoExtensions) {
-            $targetOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".h265.mp4")
-        }
-
-        # 归档路径
-        $archiveDir = Join-Path $BackupRoot $dir
-        $archivePath = Join-Path $archiveDir $name
-
-        # 检查转换后的文件是否存在且有效
-        $targetExists = $false
-        if ($targetOut -and (Test-Path $targetOut -PathType Leaf)) {
-            if ((Get-Item $targetOut).Length -gt 0) {
-                $targetExists = $true
-            }
-        }
-
-        if ($targetExists) {
-            # 执行移动
-            if (!(Test-Path $archiveDir)) { 
-                New-Item -ItemType Directory -Force -Path $archiveDir | Out-Null 
-            }
-            
-            try {
-                Move-Item $src $archivePath -Force -ErrorAction Stop
-                $cleanupCount++
-                Write-Host "📦 已归档源文件: $rel -> $archivePath" -ForegroundColor Green
-            }
-            catch {
-                Write-Host "✖ 归档失败: $rel ($($_.Exception.Message))" -ForegroundColor Red
-            }
-        }
-        else {
-            Write-Host "⏩ 跳过归档: $rel (未找到转换后的版本或版本无效)" -ForegroundColor DarkGray
-        }
-    }
-    
-    Write-Host ""
-    Write-Host "====================== 归档完成 ======================" -ForegroundColor Yellow
-    Write-Host "总共归档了 $cleanupCount 个源文件。工具运行结束。" -ForegroundColor Cyan
-    exit 0
-}
 
 
 $processImageBlock = {
@@ -484,7 +360,7 @@ $processImageBlock = {
     # 路径构造 (仅当备份启用时使用 $config.BackupRoot)
     $backupDir = $null
     $backup = $null
-    if ($config.BackupEnabled) {
+    if ($config.Mode -eq 0) {
         $backupDir = Join-Path $config.BackupRoot $dir
         $backup = Join-Path $backupDir $name
     }
@@ -493,37 +369,12 @@ $processImageBlock = {
     # 用户要求直接输出为 avif，不再使用 .tmp 后缀，避免工具识别问题
     
     try {
-        # Dry-Run 模式：仅输出命令
-        if ($config.Mode -eq 9) {
-            Write-Host "[$progress] [DRY-RUN] $runspaceId 处理: $rel" -ForegroundColor Cyan
-            if ($config.BackupEnabled) {
-                Write-Host "  → 备份: $backup" -ForegroundColor Gray
-            }
-            else {
-                Write-Host "  → 跳过备份 (备份目录不存在)" -ForegroundColor Gray
-            }
-            
-            $isHEIF = $file.Extension -in @(".heic", ".heif")
-            if ($isHEIF) {
-                Write-Host "  → 命令: $($config.NConvertExe) -out avif -q $($config.HeicQuality) -keep_icc $src" -ForegroundColor White
-            }
-            else {
-                Write-Host "  → 命令: $($config:AvifEncExe) -q $($config.Quality) $src $avifOut" -ForegroundColor White
-            }
-            
-            Write-Host "  → 行为: 备份转换并删除源文件" -ForegroundColor Gray
-            return
-        }
-
+       
         # 0. 输出进度
         Write-Host "[$progress] 正在处理: $rel (Runspace ID: $runspaceId)" -ForegroundColor DarkGray
 
 
-        # 1. 备份 (仅当备份功能启用时)
-        if ($config.BackupEnabled) {
-            New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-            Copy-Item $src $backup -Force
-        }
+  
 
         # 2. 转换
         $isHEIF = $file.Extension -in @(".heic", ".heif")
@@ -607,10 +458,9 @@ $processImageBlock = {
 
         # 4. 删除源文件 (Mode 0: 删除, Mode 1: 保留)
         if ($config.Mode -eq 0) {
-            Remove-Item $src -Force
-        }
-        elseif ($config.Mode -eq 1) {
-            Write-Host "💾 $progress $rel  已保留源文件 (共存模式 - 跳过备份)" -ForegroundColor Blue
+            New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+            Move-Item $src $backup -Force
+            Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
         }
     }
     catch {
@@ -623,7 +473,7 @@ $processImageBlock = {
 
 
 # ---------- 执行处理 (统一入口) ----------
-if ($Mode -ne 2 -and $files.Count -gt 0) {
+if ($files.Count -gt 0) {
     
     # 构造配置对象 (用于传递给并行/顺序脚本块)
     $scriptConfig = @{
@@ -679,7 +529,7 @@ if ($Mode -ne 2 -and $files.Count -gt 0) {
 }
 
 # ---------- 执行处理 (视频 / 顺序扫描) ----------
-if ($Mode -ne 2 -and $videoFiles.Count -gt 0) {
+if ($videoFiles.Count -gt 0) {
     Write-Host ""
     Write-Host ">>> 开始处理视频 (顺序执行)..." -ForegroundColor Magenta
     
@@ -710,8 +560,8 @@ if ($Mode -ne 2 -and $videoFiles.Count -gt 0) {
         # 路径构造 (仅当备份启用时使用 $BackupRoot)
         $backupDir = $null
         $backup = $null
-        if ($BackupEnabled -and ($Mode -ne 1)) {
-            # Disable backup if Mode is 1
+
+        if ($config.Mode -eq 0) {
             $backupDir = Join-Path $BackupRoot $dir
             $backup = Join-Path $backupDir $name
         }
@@ -721,12 +571,7 @@ if ($Mode -ne 2 -and $videoFiles.Count -gt 0) {
         try {
                
 
-            # 1. 备份 (仅当备份功能启用时)
-            if ($BackupEnabled -and ($Mode -ne 1)) {
-                # Disable backup if Mode is 1
-                New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-                Copy-Item $src $backup -Force
-            }
+           
     
             # 2. 转换 (FFmpeg)
             $ffmpegArgs = @("-hide_banner", "-i", $src)
@@ -797,15 +642,10 @@ if ($Mode -ne 2 -and $videoFiles.Count -gt 0) {
                 Write-Host "✔ $progress $rel  源: ${oldSizeMB}MB → 新: ${newSizeMB}MB  节省 $ratio%" -ForegroundColor Green
             }
 
-            # 4. 删除/保留源文件
-            if ($Mode -eq 0) {
-                Remove-Item $src -Force
-            }
-            elseif ($Mode -eq 1) {
-                Write-Host "💾 $progress $rel  已保留源文件 (共存模式 - 跳过备份)" -ForegroundColor Blue
-            }
-            else {
-                Write-Host "✔ $progress $rel  已转换 (无备份)" -ForegroundColor Green
+            if ($config.Mode -eq 0) {
+                New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+                Move-Item $src $backup -Force
+                Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
             }
                 
             $i++
