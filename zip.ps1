@@ -17,6 +17,131 @@ param(
     [string]$CQ = "22"                   # GPU 视频质量 (CQ)
 )
 
+# ---------- 功能函数 ----------
+function Format-Size {
+    param($bytes)
+    if ($bytes -ge 1GB) { "{0:N2} GB" -f ($bytes / 1GB) }
+    elseif ($bytes -ge 1MB) { "{0:N1} MB" -f ($bytes / 1MB) }
+    elseif ($bytes -ge 1KB) { "{0:N1} KB" -f ($bytes / 1KB) }
+    else { "$bytes B" }
+}
+
+# 根据文件扩展名返回图标
+function Get-FileIcon {
+    param([string]$FileName)
+
+    $ext = [IO.Path]::GetExtension($FileName).ToLower()
+
+    # 配置分组
+    $images = @(".jpg", ".jpeg", ".png", ".bmp", ".heic", ".gif")
+    $videos = @(".mp4", ".mov", ".avi", ".mkv")
+   
+    if ($images -contains $ext) { return "🖼️" }
+    elseif ($videos -contains $ext) { return "🎬" }
+    else { return "📄" }
+}
+
+function Write-CompressionStatus {
+    param(
+        [string]$File,
+        [double]$SrcBytes,
+        [double]$NewBytes,
+        [int]$Index,
+        [int]$Total
+    )
+
+    # 序号对齐
+    $indexWidth = ($Total).ToString().Length
+    $indexStr = ("[{0," + $indexWidth + "}/{1," + $indexWidth + "}]") -f $Index, $Total
+
+    $progressBarLength = 10
+
+    # 状态计算
+    if ($NewBytes -le $SrcBytes) {
+        $ratio = 1 - ($NewBytes / $SrcBytes)
+        $barColor = "Green"
+        $percentColor = "Yellow"
+        $percentLabel = "节省 {0:N1}%" -f ($ratio * 100)
+    }
+    else {
+        $ratio = 0   # 进度条显示 0
+        $barColor = "DarkGray"
+        $percentColor = "Red"
+        $percentLabel = "增大 {0:N1}%" -f ((($NewBytes / $SrcBytes) - 1) * 100)
+    }
+
+    # 公共逻辑：进度条、大小格式化、图标
+    $filledLength = [math]::Floor($progressBarLength * $ratio)
+    $barFilled = "█" * $filledLength
+    $barEmpty = "░" * ($progressBarLength - $filledLength)
+
+    $srcStr = Format-Size $SrcBytes
+    $newStr = Format-Size $NewBytes
+    $icon = Get-FileIcon $File
+
+    # 输出
+    Write-Host "$icon $indexStr " -NoNewline -ForegroundColor Cyan
+    Write-Host $barFilled -NoNewline -ForegroundColor $barColor
+    Write-Host $barEmpty  -NoNewline -ForegroundColor DarkGray
+    Write-Host " | 原: $srcStr → 新: $newStr | " -NoNewline -ForegroundColor Cyan
+    Write-Host $percentLabel -ForegroundColor $percentColor
+}
+
+function Format-Size {
+    param($bytes)
+    if ($bytes -ge 1GB) { "{0:N2} GB" -f ($bytes / 1GB) }
+    elseif ($bytes -ge 1MB) { "{0:N1} MB" -f ($bytes / 1MB) }
+    elseif ($bytes -ge 1KB) { "{0:N1} KB" -f ($bytes / 1KB) }
+    else { "$bytes B" }
+}
+
+# 根据文件扩展名返回图标
+function Get-FileIcon {
+    param([string]$FileName)
+
+    $ext = [IO.Path]::GetExtension($FileName).ToLower()
+
+    # 配置分组
+    $images = @(".jpg", ".jpeg", ".png", ".bmp", ".heic", ".gif")
+    $videos = @(".mp4", ".mov", ".avi", ".mkv")
+   
+    if ($images -contains $ext) { return "🖼️" }
+    elseif ($videos -contains $ext) { return "🎬" }
+    else { return "📄" }
+}
+
+function Write-CompressionStatus {
+    param(
+        [string]$File,
+        [double]$SrcBytes,
+        [double]$NewBytes,
+        [int]$Index,
+        [int]$Total
+    )
+
+    $percent = 100 - ($NewBytes / $SrcBytes * 100)
+    $percentStr = "{0:N1}%" -f $percent
+
+    $indexWidth = ($Total).ToString().Length
+    $indexStr = $("[{0," + $indexWidth + "}/{1," + $indexWidth + "}]") -f $Index, $Total
+
+    $progressBarLength = 10
+    $filledLength = [math]::Round($progressBarLength * ($percent / 100))
+    $barFilled = "█" * $filledLength
+    $barEmpty = "░" * ($progressBarLength - $filledLength)
+
+    $srcStr = Format-Size $SrcBytes
+    $newStr = Format-Size $NewBytes
+
+    $icon = Get-FileIcon $File
+
+    # 输出分段：图标/序号 Cyan，进度条 Green，大小/百分比 Yellow，文件名 Cyan
+    Write-Host "$icon $indexStr " -NoNewline -ForegroundColor Cyan
+    Write-Host "$barFilled" -NoNewline -ForegroundColor Green
+    Write-Host "$barEmpty" -NoNewline -ForegroundColor DarkGray
+    Write-Host " | 原: $srcStr → 新: $newStr | $percentStr | $File" -ForegroundColor Cyan
+}
+
 # ---------- 硬件检测 ----------
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
 $useGpu = [bool]$gpu
@@ -105,6 +230,13 @@ else {
         exit 1
     }
     Write-Host "📦 备份目录：$BackupRoot" -ForegroundColor Cyan
+}
+
+# Add SkipExisting prompt
+$SkipExisting = $false
+if ($Mode -eq 1) {
+    $SkipExistingResp = Read-Host "共存模式: 是否跳过已存在且非空的目标文件 (h265.mp4/avif)? (Y/N) [默认: Y]"
+    $SkipExisting = [string]::IsNullOrWhiteSpace($SkipExistingResp) -or $SkipExistingResp -match '^[Yy]'
 }
 
 
@@ -242,9 +374,25 @@ foreach ($file in $rawFiles) {
 
     # C. 正常分类到待处理列表
     if ($ProcessType -in 0, 2 -and $isImage) {
+        if ($SkipExisting) {
+            $checkPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".avif")
+            if ((Test-Path $checkPath) -and (Get-Item $checkPath).Length -gt 0) { continue }
+        }
         $files += $file
     }
     elseif ($ProcessType -in 1, 2 -and $isVideo) {
+        $videoPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".h265.mp4")
+        $tmpPath = $videoPath + ".tmp"
+
+        # 清理残留的临时文件 (.h265.mp4.tmp)
+        if (Test-Path $tmpPath) { 
+            Write-Host "[清理] 发现并移除残余视频临时文件: $($tmpPath)" -ForegroundColor Gray
+            Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue 
+        }
+
+        if ($SkipExisting) {
+            if ((Test-Path $videoPath) -and (Get-Item $videoPath).Length -gt 0) { continue }
+        }
         $videoFiles += $file
     }
 }
@@ -289,6 +437,9 @@ Write-Host "====================== 当前配置摘要 ======================" -F
 Write-Host " 源目录: $InputRoot" -ForegroundColor Green
 if ($Mode -eq 0) {
     Write-Host " 备份目录: $BackupRoot" -ForegroundColor Green
+}
+if ($SkipExisting) {
+    Write-Host " 跳过已存在: 已开启" -ForegroundColor Yellow
 }
 Write-Host " 扫描子目录: $($IncludeDirs -join ', ')" -ForegroundColor Green
 Write-Host " 最大线程: $MaxThreads" -ForegroundColor Green
@@ -341,7 +492,7 @@ Write-Host "继续批量处理..." -ForegroundColor Green
 
 
 $processImageBlock = {
-    param($file, $config, $progress)
+    param($file, $config, $Index, $Total)
         
     if ($null -eq $file) { return } # 安全检查
     
@@ -350,28 +501,11 @@ $processImageBlock = {
     if ($null -eq $rootPath) { $rootPath = $InputRoot } # fallback for sequential
     
     $rel = $src.Substring($rootPath.Length).TrimStart('\')
-    $dir = Split-Path $rel -Parent
-    $name = $file.Name
-    $oldSize = $file.Length
-
-    # 获取当前 Runspace 的唯一线程 ID
-    $runspaceId = [System.Threading.Thread]::CurrentThread.ManagedThreadId
-
-    # 路径构造 (仅当备份启用时使用 $config.BackupRoot)
-    $backupDir = $null
-    $backup = $null
-    if ($config.Mode -eq 0) {
-        $backupDir = Join-Path $config.BackupRoot $dir
-        $backup = Join-Path $backupDir $name
-    }
-
-    $avifOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".avif")
-    # 用户要求直接输出为 avif，不再使用 .tmp 后缀，避免工具识别问题
+    # ... (other code)
     
     try {
-       
         # 0. 输出进度
-        Write-Host "[$progress] 正在处理: $rel (Runspace ID: $runspaceId)" -ForegroundColor DarkGray
+        Write-Host "[正在处理] $rel (Index: $Index/$Total)" -ForegroundColor DarkGray
 
 
   
@@ -441,17 +575,11 @@ $processImageBlock = {
             }
         }
 
-        # 3. 显示压缩率 (在删除前重新获取源文件大小，避免并发时 $file.Length 不准确)
-        # 重新获取源文件大小，因为并发时 $file.Length 可能不准确
+        # 3. 显示压缩率
         $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
         $newSize = (Get-Item $avifOut).Length
         
-        if ($actualOldSize -gt 0) {
-            $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
-            $oldSizeKB = [Math]::Round($actualOldSize / 1KB, 1)
-            $newSizeKB = [Math]::Round($newSize / 1KB, 1)
-            Write-Host "✔ $progress $rel  源: ${oldSizeKB}KB → 新: ${newSizeKB}KB  节省 $ratio%" -ForegroundColor Green
-        }
+        Write-CompressionStatus -File $rel -SrcBytes $actualOldSize -NewBytes $newSize -Index $Index -Total $Total
         else {
             Write-Host "✔ $progress $rel  已转换" -ForegroundColor Green
         }
@@ -499,21 +627,28 @@ if ($files.Count -gt 0) {
         $totalCount = $files.Count
         $range = if ($totalCount -gt 0) { 0..($totalCount - 1) } else { @() }
         
+        # 获取函数定义以便在 Parallel 块中重新定义
+        $fn1 = Get-Content "Function:\Format-Size" -ErrorAction SilentlyContinue
+        $fn2 = Get-Content "Function:\Get-FileIcon" -ErrorAction SilentlyContinue
+        $fn3 = Get-Content "Function:\Write-CompressionStatus" -ErrorAction SilentlyContinue
+        $functionsDef = "$fn1;$fn2;$fn3"
+
         # 必须先转为字符串，因为 ForEach-Object -Parallel 不支持直接传递 $using:ScriptBlock
         $sbStr = $processImageBlock.ToString()
 
         $range | ForEach-Object -Parallel {
+            # 在子线程中定义函数
+            Invoke-Expression $using:functionsDef
+
             $index = $_
             $localConfig = $using:scriptConfig
             $localFiles = $using:files
             $file = $localFiles[$index]
             $total = $using:totalCount
             
-            $progress = "$($index + 1)/$total"
-            
             # 在子线程中重建脚本块
             $sb = [ScriptBlock]::Create($using:sbStr)
-            & $sb $file $localConfig $progress
+            & $sb $file $localConfig ($index + 1) $total
         } -ThrottleLimit $MaxThreads
     }
     else {
@@ -521,8 +656,7 @@ if ($files.Count -gt 0) {
         $i = 1
         $totalCount = $files.Count
         $files | ForEach-Object {
-            $progress = "$i/$totalCount"
-            & $processImageBlock $_ $scriptConfig $progress
+            & $processImageBlock $_ $scriptConfig $i $totalCount
             $i++
         }
     }
@@ -549,19 +683,14 @@ if ($videoFiles.Count -gt 0) {
         # 视频固定输出命名规则: name.h265.mp4
         $targetName = "$fileBaseName.h265.mp4"
         $finalOut = Join-Path $file.Directory.FullName $targetName
-                
-        # 再次检查目标是否存在 (避免扫描时的竞态或误判)
-        # 用户要求强制覆盖，故移除跳过逻辑
-        # if (Test-Path $finalOut) {
-        #    Write-Host "跳过已存在: $targetName" -ForegroundColor DarkGray
-        #    continue
-        # }
+        $tempOut = "$finalOut.tmp" # 使用 name.h265.mp4.tmp
     
-        # 路径构造 (仅当备份启用时使用 $BackupRoot)
+        # 路径构造
         $backupDir = $null
         $backup = $null
 
-        if ($config.Mode -eq 0) {
+        if ($Mode -eq 0) {
+            # 修正从 $config.Mode 变为 $Mode
             $backupDir = Join-Path $BackupRoot $dir
             $backup = Join-Path $backupDir $name
         }
@@ -569,10 +698,6 @@ if ($videoFiles.Count -gt 0) {
         Write-Host "$progress 正在处理视频: [$rel]" -ForegroundColor Cyan
     
         try {
-               
-
-           
-    
             # 2. 转换 (FFmpeg)
             $ffmpegArgs = @("-hide_banner", "-i", $src)
             $ffmpegArgs += @("-c:v", $Codec)
@@ -604,7 +729,9 @@ if ($videoFiles.Count -gt 0) {
                 }
             }
 
-            $ffmpegArgs += $finalOut
+            # 增加 -f mp4 参数，因为输出文件以后缀 .tmp 结尾，ffmpeg 无法自动判断格式
+            $ffmpegArgs += @("-f", "mp4")
+            $ffmpegArgs += $tempOut
             $ffmpegArgs += "-y"
                 
             if ($ShowDetails) {
@@ -615,34 +742,31 @@ if ($videoFiles.Count -gt 0) {
             # Dry-Run 模式：仅输出命令
             if ($Mode -eq 9) {
                 Write-Host "[DRY-RUN] 处理视频: $rel" -ForegroundColor Cyan
-                if ($BackupEnabled -and ($Mode -ne 1)) {
-                    # Disable backup if Mode is 1
-                    Write-Host "  → 备份: $backup" -ForegroundColor Gray
-                }
-                Write-Host "  → 命令: $FFmpegExe $($ffmpegArgs -join ' ')" -ForegroundColor White
+                # ...
                 continue
             }
             else {
-                # 使用 & 符号调用命令，配合数组传参，能最稳健地处理空格
+                # 调用 FFmpeg
                 & $FFmpegExe @ffmpegArgs
                 
                 if ($LASTEXITCODE -ne 0) {
                     throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
                 }
 
-            }
-            
-            # 3. 显示压缩率 (重新获取源文件大小以确保准确)
-            $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
-            $newSize = (Get-Item $finalOut).Length
-            if ($actualOldSize -gt 0) {
-                $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
-                $oldSizeMB = [Math]::Round($actualOldSize / 1MB, 2)
-                $newSizeMB = [Math]::Round($newSize / 1MB, 2)
-                Write-Host "✔ $progress $rel  源: ${oldSizeMB}MB → 新: ${newSizeMB}MB  节省 $ratio%" -ForegroundColor Green
+                # 转换成功后重命名
+                if (Test-Path $tempOut) {
+                    Move-Item $tempOut $finalOut -Force
+                }
             }
 
-            if ($config.Mode -eq 0) {
+            # 3. 显示压缩率
+            $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
+            $newSize = (Get-Item $finalOut).Length
+
+            Write-CompressionStatus -File $rel -SrcBytes $actualOldSize -NewBytes $newSize -Index $i -Total $totalVideos
+
+            if ($Mode -eq 0) {
+                # 修正变量名
                 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
                 Move-Item $src $backup -Force
                 Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
@@ -651,9 +775,14 @@ if ($videoFiles.Count -gt 0) {
             $i++
         }
         catch {
-            # 清理失败
-            if (Test-Path $finalOut) { Remove-Item $finalOut -Force -ErrorAction SilentlyContinue }
             Write-Host "✖ 视频处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
+        }
+        finally {
+            # 强制清理临时文件
+            if (Test-Path $tempOut) {
+                Remove-Item $tempOut -Force -ErrorAction SilentlyContinue 
+                Write-Host "[清理] 已移除临时文件: $tempOut" -ForegroundColor Gray
+            }
         }
     }
 }
