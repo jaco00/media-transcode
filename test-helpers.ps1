@@ -3,6 +3,33 @@
 # ===============================
 . "$PSScriptRoot\helpers.ps1"
 
+# 检查 PowerShell 是否安装，特别是 pwsh
+$requiredVersion = [version]"7.0.0"
+$pwshPath = Get-Command pwsh -ErrorAction SilentlyContinue
+
+if (-not $pwshPath) {
+    Write-Host "未找到 PowerShell 7 (pwsh)。请安装 PowerShell 7 或更高版本，并运行 pwsh。"
+    Write-Host "安装 PowerShell 7 请使用以下命令："
+    Write-Host "winget install --id Microsoft.Powershell --source winget"
+    exit 1  # 退出脚本
+}
+
+# 获取当前 pwsh 的版本
+$currentVersionString = & $pwshPath --version
+
+# 提取 PowerShell 版本号并去掉前缀 "PowerShell "
+$currentVersion = [version]($currentVersionString -replace 'PowerShell ', '')
+
+if ($currentVersion -lt $requiredVersion) {
+    Write-Host "当前 PowerShell 版本为 $currentVersion。此脚本需要 PowerShell 7.0 或更高版本。"
+    Write-Host "请运行以下命令以安装 PowerShell 7 或更高版本："
+    Write-Host "winget install --id Microsoft.Powershell --source winget"
+    exit 1  # 退出脚本
+}
+
+
+$index = 0
+
 # ===============================
 # 2. 定义业务函数（只写一次）
 # ===============================

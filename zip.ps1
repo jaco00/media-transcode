@@ -376,7 +376,7 @@ function Process-Image {
             $nconvertArgs += "-overwrite"
 
             if ($config.ShowDetails) {
-                $nconvertArgs += "-info"
+                $nconvertArgs += "-v"
             }
             else {
                 $nconvertArgs += "-quiet"
@@ -392,8 +392,9 @@ function Process-Image {
             $nconvertArgStr = "$($nconvertArgs -join ' ')"
 
             if ($config.ShowDetails) {
-                Write-Host "CMD: $config.NConvertExe $nconvertArgStr" -ForegroundColor Yellow
-                &   $config.NConvertExe @nconvertArgs
+                Write-Host "CMD: $($config.NConvertExe) $nconvertArgStr" -ForegroundColor Yellow
+                $output= & $config.NConvertExe @nconvertArgs  2>&1
+                Write-Host $output -ForegroundColor Yellow
             }
             else {
                 # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
@@ -416,7 +417,8 @@ function Process-Image {
 
             if ($config.ShowDetails) {
                 Write-Host "CMD: $($config.AvifEncExe) $avifArgStr" -ForegroundColor DarkYellow
-                & $config.AvifEncExe @avifArgs
+                $output= & $config.AvifEncExe @avifArgs 2>&1
+                Write-Host $output -ForegroundColor Yellow
             }
             else {
                 # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
