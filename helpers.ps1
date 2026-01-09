@@ -79,3 +79,44 @@ function Write-CompressionStatus {
         Write-Host " | $File" -ForegroundColor White
     }
 }
+
+function Resolve-ToolExe {
+    param(
+        [Parameter(Mandatory)]
+        [string]$ExeName
+    )
+
+    # 尝试解析脚本目录
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    if (-not $scriptDir) {
+        $scriptDir = (Get-Location).Path
+    } 
+    # bin 目录
+    $binDir = Join-Path $scriptDir "bin"
+    $binExe = Join-Path $binDir $ExeName
+    
+
+    $toolPath = $null
+
+    # 先找 bin
+    if (Test-Path -LiteralPath $binExe) {
+        $toolPath = $binExe
+    }
+    # 再找 PATH
+    elseif ($cmd = Get-Command $ExeName -ErrorAction SilentlyContinue) {
+        $toolPath = $cmd.Path
+    }
+    else {
+        throw "未找到可用的 $ExeName（bin 或 PATH）"
+    }
+
+    # 测试可执行性
+    try {
+        & "$toolPath" -version *> $null
+        Write-Host "[命令测试] $toolPath 可执行 ✅" -ForegroundColor Green
+        return $toolPath
+    }
+    catch {
+        throw "$ExeName 找到路径 $toolPath，但无法运行"
+    }
+}

@@ -3,7 +3,7 @@
 # Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 param(
-    [string]$SourcePath = "05.photo",      # 源目录
+    [string]$SourcePath = "",      # 源目录
     [int]$Quality = 80,                 # AVIF 质量模式 (-q)。根据用户测试，数值越高，画质越清晰 (80 为高质量，范围 0-100)。
     [string]$BackupDirName = "", # 备份目录
     [string[]]$IncludeDirs = @(),        # 只扫描 SourcePath 下的指定子目录（例如 '2023','2024'）。为空则扫描所有。
@@ -17,60 +17,8 @@ param(
     [string]$CQ = "22"                   # GPU 视频质量 (CQ)
 )
 
-function Format-Size {
-    param($bytes)
-    if ($bytes -ge 1GB) { "{0:N2} GB" -f ($bytes / 1GB) }
-    elseif ($bytes -ge 1MB) { "{0:N1} MB" -f ($bytes / 1MB) }
-    elseif ($bytes -ge 1KB) { "{0:N1} KB" -f ($bytes / 1KB) }
-    else { "$bytes B" }
-}
+. "$PSScriptRoot\helpers.ps1"
 
-# 根据文件扩展名返回图标
-function Get-FileIcon {
-    param([string]$FileName)
-
-    $ext = [IO.Path]::GetExtension($FileName).ToLower()
-
-    # 配置分组
-    $images = @(".jpg", ".jpeg", ".png", ".bmp", ".heic", ".gif")
-    $videos = @(".mp4", ".mov", ".avi", ".mkv")
-   
-    if ($images -contains $ext) { return "🖼️" }
-    elseif ($videos -contains $ext) { return "🎬" }
-    else { return "📄" }
-}
-
-function Write-CompressionStatus {
-    param(
-        [string]$File,
-        [double]$SrcBytes,
-        [double]$NewBytes,
-        [int]$Index,
-        [int]$Total
-    )
-
-    $percent = 100 - ($NewBytes / $SrcBytes * 100)
-    $percentStr = "{0:N1}%" -f $percent
-
-    $indexWidth = ($Total).ToString().Length
-    $indexStr = $("[{0," + $indexWidth + "}/{1," + $indexWidth + "}]") -f $Index, $Total
-
-    $progressBarLength = 10
-    $filledLength = [math]::Round($progressBarLength * ($percent / 100))
-    $barFilled = "█" * $filledLength
-    $barEmpty = "░" * ($progressBarLength - $filledLength)
-
-    $srcStr = Format-Size $SrcBytes
-    $newStr = Format-Size $NewBytes
-
-    $icon = Get-FileIcon $File
-
-    # 输出分段：图标/序号 Cyan，进度条 Green，大小/百分比 Yellow，文件名 Cyan
-    Write-Host "$icon $indexStr " -NoNewline -ForegroundColor Cyan
-    Write-Host "$barFilled" -NoNewline -ForegroundColor Green
-    Write-Host "$barEmpty" -NoNewline -ForegroundColor DarkGray
-    Write-Host " | 原: $srcStr → 新: $newStr | $percentStr | $File" -ForegroundColor Cyan
-}
 
 # ---------- 硬件检测 ----------
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
@@ -87,46 +35,7 @@ else {
 $imageExtensions = @(".jpg", ".jpeg", ".png", ".heic", ".heif")
 $videoExtensions = @(".mp4", ".mov", ".wmv", ".avi", ".mkv")
 
-function Resolve-ToolExe {
-    param(
-        [Parameter(Mandatory)]
-        [string]$ExeName
-    )
 
-    # 尝试解析脚本目录
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    if (-not $scriptDir) {
-        $scriptDir = (Get-Location).Path
-    } 
-    # bin 目录
-    $binDir = Join-Path $scriptDir "bin"
-    $binExe = Join-Path $binDir $ExeName
-    
-
-    $toolPath = $null
-
-    # 先找 bin
-    if (Test-Path -LiteralPath $binExe) {
-        $toolPath = $binExe
-    }
-    # 再找 PATH
-    elseif ($cmd = Get-Command $ExeName -ErrorAction SilentlyContinue) {
-        $toolPath = $cmd.Path
-    }
-    else {
-        throw "未找到可用的 $ExeName（bin 或 PATH）"
-    }
-
-    # 测试可执行性
-    try {
-        & "$toolPath" -version *> $null
-        Write-Host "[命令测试] $toolPath 可执行 ✅" -ForegroundColor Green
-        return $toolPath
-    }
-    catch {
-        throw "$ExeName 找到路径 $toolPath，但无法运行"
-    }
-}
 
 $FFmpegExe = Resolve-ToolExe "ffmpeg.exe"
 $AvifEncExe = Resolve-ToolExe "avifenc.exe"
@@ -494,8 +403,8 @@ $processImageBlock = {
                 $null = & $config.NConvertExe @nconvertArgs 2>&1
             }
             
-            if ($LASTEXITCODE -ne 0) { 
-                throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $NConvertExe $nconvertArgStr" 
+            if ($LASTEXITCODE -ne 0) {
+                throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $($config.NConvertExe) $nconvertArgStr"
             }
             
         }
@@ -720,6 +629,13 @@ if ($videoFiles.Count -gt 0) {
         }
         catch {
             Write-Host "✖ 视频处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
+        }
+        finally {
+            # 强制清理临时文件
+            if (Test-Path $tempOut) {
+                Remove-Item $tempOut -Force -ErrorAction SilentlyContinue 
+                Write-Host "[清理] 已移除临时文件: $tempOut" -ForegroundColor Gray
+            }
         }
     }
 }
