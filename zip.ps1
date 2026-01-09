@@ -328,17 +328,16 @@ do {
 Write-Host "继续批量处理..." -ForegroundColor Green
 
 
-
-
-$processImageBlock = {
-    param($file, $config, $progress)
+# ---------- 保留原来的 ScriptBlock（用于并行模式）----------
+function Process-Image {
+    param($file, $config)
         
     if ($null -eq $file) { return } # 安全检查
     
     $src = $file.FullName
     $rootPath = $config.InputRoot
     if ($null -eq $rootPath) { $rootPath = $InputRoot } # fallback for sequential
-    
+
     $rel = $src.Substring($rootPath.Length).TrimStart('\')
     $dir = Split-Path $rel -Parent
     $name = $file.Name
@@ -359,35 +358,33 @@ $processImageBlock = {
     # 用户要求直接输出为 avif，不再使用 .tmp 后缀，避免工具识别问题
     
     try {
-       
+
         # 0. 输出进度
-        Write-Host "[$progress] 正在处理: $rel (Runspace ID: $runspaceId)" -ForegroundColor DarkGray
-
-
-  
+        #Write-Host "[$progress] 正在处理: $rel (Runspace ID: $runspaceId)" -ForegroundColor DarkGray
 
         # 2. 转换
         $isHEIF = $file.Extension -in @(".heic", ".heif")
-        
+        $newSize = 0  # 初始化
+
         if ($isHEIF) {
             # ── HEIC/HEIF (NConvert) ──
-            
+
             # 构造 nconvert 参数
             $nconvertArgs = @("-out", "avif")
             $nconvertArgs += @("-q", $config.HeicQuality)
             $nconvertArgs += "-keep_icc"
             $nconvertArgs += "-overwrite"
-            
+
             if ($config.ShowDetails) {
                 $nconvertArgs += "-info"
             }
             else {
                 $nconvertArgs += "-quiet"
             }
-            
+
             # 输出文件 (直接写 avif)
             $nconvertArgs += @("-o", $avifOut)
-            
+
             # 输入文件
             $nconvertArgs += $src
 
@@ -402,11 +399,11 @@ $processImageBlock = {
                 # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
                 $null = & $config.NConvertExe @nconvertArgs 2>&1
             }
-            
+
             if ($LASTEXITCODE -ne 0) {
                 throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $($config.NConvertExe) $nconvertArgStr"
             }
-            
+
         }
         else {
             # 转换普通文件 (jpg, png)，使用 Avifenc
@@ -426,38 +423,54 @@ $processImageBlock = {
                 $null = & $config.AvifEncExe @avifArgs 2>&1
             }
 
-            if ($LASTEXITCODE -ne 0) { 
-                throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $AvifEncExe $avifArgStr" 
+            if ($LASTEXITCODE -ne 0) {
+                throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $($config.AvifEncExe) $avifArgStr"
             }
+            # 获取转换后的文件大小
+            
         }
 
-        # 3. 显示压缩率 (在删除前重新获取源文件大小，避免并发时 $file.Length 不准确)
-        # 重新获取源文件大小，因为并发时 $file.Length 可能不准确
+        # 重新获取源文件大小，避免并发时 $file.Length 不准确
         $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
         $newSize = (Get-Item $avifOut).Length
-        
-        if ($actualOldSize -gt 0) {
-            $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
-            $oldSizeKB = [Math]::Round($actualOldSize / 1KB, 1)
-            $newSizeKB = [Math]::Round($newSize / 1KB, 1)
-            Write-Host "✔ $progress $rel  源: ${oldSizeKB}KB → 新: ${newSizeKB}KB  节省 $ratio%" -ForegroundColor Green
-        }
-        else {
-            Write-Host "✔ $progress $rel  已转换" -ForegroundColor Green
-        }
 
-        # 4. 删除源文件 (Mode 0: 删除, Mode 1: 保留)
-        if ($config.Mode -eq 0) {
-            New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-            Move-Item $src $backup -Force
-            Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
-        }
+        # # 3. 显示压缩率 (在删除前重新获取源文件大小，避免并发时 $file.Length 不准确)
+        # # 重新获取源文件大小，因为并发时 $file.Length 可能不准确
+        # $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
+        # $newSize = (Get-Item $avifOut).Length
+        
+        # if ($actualOldSize -gt 0) {
+        #     $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
+        #     $oldSizeKB = [Math]::Round($actualOldSize / 1KB, 1)
+        #     $newSizeKB = [Math]::Round($newSize / 1KB, 1)
+        #     Write-Host "✔ $progress $rel  源: ${oldSizeKB}KB → 新: ${newSizeKB}KB  节省 $ratio%" -ForegroundColor Green
+        # }
+        # else {
+        #     Write-Host "✔ $progress $rel  已转换" -ForegroundColor Green
+        # }
+
+        # # 4. 删除源文件 (Mode 0: 删除, Mode 1: 保留)
+        # if ($config.Mode -eq 0) {
+        #     New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+        #     Move-Item $src $backup -Force
+        #     Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
+        # }
     }
     catch {
         # 清理失败 (如果存在部分写入的文件)
         if (Test-Path $avifOut) { Remove-Item $avifOut -Force -ErrorAction SilentlyContinue }
         # 在并行模式下，使用 Write-Host 配合颜色提示失败
         Write-Host "✖ 处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
+        return [pscustomobject]@{
+            File     = $src
+            SrcBytes = $actualOldSize
+            NewBytes = 0  # 返回失败时的 NewBytes 设为 0
+        }
+    }
+    [pscustomobject]@{
+        File     = $src
+        SrcBytes = $actualOldSize
+        NewBytes = $newSize
     }
 }
 
@@ -489,8 +502,10 @@ if ($files.Count -gt 0) {
         $range = if ($totalCount -gt 0) { 0..($totalCount - 1) } else { @() }
         
         # 必须先转为字符串，因为 ForEach-Object -Parallel 不支持直接传递 $using:ScriptBlock
-        $sbStr = $processImageBlock.ToString()
+       
+        $processFunc = ${function:Process-Image}.ToString()
 
+        $index = 0
         $range | ForEach-Object -Parallel {
             $index = $_
             $localConfig = $using:scriptConfig
@@ -501,17 +516,33 @@ if ($files.Count -gt 0) {
             $progress = "$($index + 1)/$total"
             
             # 在子线程中重建脚本块
-            $sb = [ScriptBlock]::Create($using:sbStr)
-            & $sb $file $localConfig $progress
-        } -ThrottleLimit $MaxThreads
+            Set-Item -Path function:Process-Image -Value ([ScriptBlock]::Create($using:processFunc))
+
+            # 只做事，不输出
+            Process-Image $file $localConfig 
+            # $sb = [ScriptBlock]::Create($using:sbStr)
+            # & $sb $file $localConfig 
+        } -ThrottleLimit $MaxThreads |
+        ForEach-Object {
+
+            # 主 Runspace：顺序输出
+            $index++
+
+            Write-CompressionStatus `
+                -File $_.File `
+                -SrcBytes $_.SrcBytes `
+                -NewBytes $_.NewBytes `
+                -Index $index `
+                -Total $totalCount
+        }
+
     }
     else {
-        # 顺序执行: 直接调用脚本块
+        # 顺序执行: 直接调用函数
         $i = 1
         $totalCount = $files.Count
         $files | ForEach-Object {
-            $progress = "$i/$totalCount"
-            & $processImageBlock $_ $scriptConfig $progress
+            Process-Image $_ $scriptConfig
             $i++
         }
     }
