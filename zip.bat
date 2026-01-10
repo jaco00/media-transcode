@@ -1,19 +1,27 @@
 @echo off
 setlocal
+chcp 65001 >nul
 
 REM Check if PowerShell 7 (pwsh) is available
 where pwsh >nul 2>nul
-if %ERRORLEVEL%==0 (
-    echo PowerShell 7 detected.
+if %ERRORLEVEL%==1 (
+    echo [Detection] PowerShell 7 detected, will use pwsh
     set "PS_CMD=pwsh -NoProfile -ExecutionPolicy Bypass -File"
 ) else (
-    echo PowerShell 7 is not installed.
+    cls
+    echo =============================================================
+    echo     This computer does not have PowerShell 7 installed
+    echo =============================================================
     echo.
-    echo You can install PowerShell 7 using the following command:
-    echo [ winget install --id Microsoft.PowerShell ]
+    echo     Install PowerShell 7 for parallel processing support
     echo.
-    echo Installing PowerShell 7 is recommended for parallel processing support.
+    echo     Use the following command to install:
+    echo.
+    echo     winget install --id Microsoft.PowerShell
+    echo =============================================================
+    echo.
     pause
+
     REM fallback to PowerShell 5
     set "PS_CMD=powershell -NoProfile -ExecutionPolicy Bypass -File"
 )

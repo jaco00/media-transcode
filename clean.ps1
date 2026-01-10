@@ -3,16 +3,17 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Dir
+    [string]$SourcePath
+    [string]$BackupDirName = "", # 备份目录
 )
 
 # 解析目录路径
-if (-not (Test-Path -LiteralPath $Dir)) {
-    Write-Host "错误: 目录不存在: $Dir" -ForegroundColor Red
+if (-not (Test-Path -LiteralPath $SourcePath)) {
+    Write-Host "错误: 目录不存在: $SourcePath" -ForegroundColor Red
     exit 1
 }
 
-$Dir = (Resolve-Path -LiteralPath $Dir).Path
+$Dir = (Resolve-Path -LiteralPath $SourcePath).Path
 
 # 文件扩展名配置
 $imageSrcExt = @(".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
@@ -24,7 +25,7 @@ $videoDstExt = $videoDstSuffix.ToLowerInvariant() # 统一使用小写后缀进�
 
 Write-Host ""
 Write-Host "====================== 扫描配置 ======================" -ForegroundColor Yellow
-Write-Host "  扫描目录: $Dir" -ForegroundColor Cyan
+Write-Host "  扫描目录: $SourcePath" -ForegroundColor Cyan
 Write-Host "  扫描模式: 递归扫描所有子目录" -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Yellow
 Write-Host ""
@@ -33,7 +34,7 @@ Write-Host ""
 Write-Host "正在扫描文件..." -ForegroundColor Cyan
 
 # 快速获取所有文件对象
-$allFiles = Get-ChildItem -Path $Dir -Recurse -File
+$allFiles = Get-ChildItem -Path $SourcePath -Recurse -File
 
 # 建立索引：按目录+基名分组 (此步骤已是高效的)
 $filesByDirAndBase = @{}
