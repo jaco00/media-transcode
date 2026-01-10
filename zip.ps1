@@ -20,6 +20,8 @@ param(
 . "$PSScriptRoot\helpers.ps1"
 
 
+
+
 # ---------- 硬件检测 ----------
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
 $useGpu = [bool]$gpu
@@ -365,7 +367,7 @@ function Process-Image {
         # 2. 转换
         $isHEIF = $file.Extension -in @(".heic", ".heif")
         $newSize = 0  # 初始化
-
+        $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
         if ($isHEIF) {
             # ── HEIC/HEIF (NConvert) ──
 
@@ -415,54 +417,46 @@ function Process-Image {
             # 构造参数字符串用于诊断
             $avifArgStr = "$($avifArgs -join ' ')"
 
+            # 捕获输出用于错误诊断
+            $output = & $config.AvifEncExe @avifArgs 2>&1
+
             if ($config.ShowDetails) {
                 Write-Host "CMD: $($config.AvifEncExe) $avifArgStr" -ForegroundColor DarkYellow
-                $output= & $config.AvifEncExe @avifArgs 2>&1
                 Write-Host $output -ForegroundColor Yellow
-            }
-            else {
-                # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
-                $null = & $config.AvifEncExe @avifArgs 2>&1
             }
 
             if ($LASTEXITCODE -ne 0) {
-                throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $($config.AvifEncExe) $avifArgStr"
+                throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $($config.AvifEncExe) $avifArgStr`n错误信息: $($output -join "`n")"
             }
             # 获取转换后的文件大小
             
         }
 
         # 重新获取源文件大小，避免并发时 $file.Length 不准确
-        $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
+       
         $newSize = (Get-Item $avifOut).Length
 
-        # # 3. 显示压缩率 (在删除前重新获取源文件大小，避免并发时 $file.Length 不准确)
-        # # 重新获取源文件大小，因为并发时 $file.Length 可能不准确
-        # $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
-        # $newSize = (Get-Item $avifOut).Length
         
-        # if ($actualOldSize -gt 0) {
-        #     $ratio = [Math]::Round((1 - [double]$newSize / [double]$actualOldSize) * 100, 1)
-        #     $oldSizeKB = [Math]::Round($actualOldSize / 1KB, 1)
-        #     $newSizeKB = [Math]::Round($newSize / 1KB, 1)
-        #     Write-Host "✔ $progress $rel  源: ${oldSizeKB}KB → 新: ${newSizeKB}KB  节省 $ratio%" -ForegroundColor Green
-        # }
-        # else {
-        #     Write-Host "✔ $progress $rel  已转换" -ForegroundColor Green
-        # }
-
-        # # 4. 删除源文件 (Mode 0: 删除, Mode 1: 保留)
-        # if ($config.Mode -eq 0) {
-        #     New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-        #     Move-Item $src $backup -Force
-        #     Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
-        # }
     }
     catch {
         # 清理失败 (如果存在部分写入的文件)
         if (Test-Path $avifOut) { Remove-Item $avifOut -Force -ErrorAction SilentlyContinue }
         # 在并行模式下，使用 Write-Host 配合颜色提示失败
         Write-Host "✖ 处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
+
+        # 写入日志 (使用 Mutex 保证线程安全)
+        $logFile = Join-Path $rootPath "err-$(Get-Date -Format 'yyyy-MM-dd').log"
+        $logContent = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] 失败: $src`n错误: $($_.Exception.Message)`n" + ("-" * 60) + "`n"
+
+        $logMutex = $config.LogMutex
+       
+        try {
+            $logMutex.WaitOne() | Out-Null  # 请求访问互斥锁
+            Add-Content $logFile $logContent -ErrorAction SilentlyContinue  # 写入日志
+        } finally {
+            $logMutex.ReleaseMutex()  # 释放互斥锁
+        }
+
         return [pscustomobject]@{
             File     = $src
             SrcBytes = $actualOldSize
@@ -497,6 +491,7 @@ if ($files.Count -gt 0) {
 
         AvifEncExe     = $AvifEncExe
         NConvertExe    = $NConvertExe
+        LogMutex = [System.Threading.Mutex]::new($false, "Global\PhotoScriptLogMutex")
     }
 
     if ($parallelEnabled) {
