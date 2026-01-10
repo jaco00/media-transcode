@@ -3,8 +3,8 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$SourcePath
-    [string]$BackupDirName = "", # 备份目录
+    [string]$SourcePath,
+    [string]$BackupDirName = "" # 备份目录
 )
 
 # 解析目录路径
@@ -14,6 +14,27 @@ if (-not (Test-Path -LiteralPath $SourcePath)) {
 }
 
 $Dir = (Resolve-Path -LiteralPath $SourcePath).Path
+
+# 备份目录处理
+if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
+    $Mode = 1
+    Write-Host "🔹 清理模式：清理所有已经转换过的源文件" -ForegroundColor Cyan
+}
+else {
+    $Mode = 0
+    if ([System.IO.Path]::IsPathRooted($BackupDirName)) {
+        $BackupRoot = [System.IO.Path]::GetFullPath($BackupDirName)
+    }
+    else {
+        $BackupRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $BackupDirName))
+    }
+    if (-not (Test-Path $BackupRoot)) {
+        Write-Host "❌ 错误：备份目录不存在 -> $BackupRoot" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "🔹 备份模式: 将所有已转换的文件备份到指定目录" -ForegroundColor Cyan
+    Write-Host "📦 目标备份目录: $BackupRoot" -ForegroundColor Green
+}
 
 # 文件扩展名配置
 $imageSrcExt = @(".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
@@ -315,14 +336,19 @@ if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
 
 # === 确认删除 ===
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
-Write-Host "⚠️  警告: 即将删除 $($imageMatches.Count + $videoMatches.Count) 个源文件" -ForegroundColor Red
+if ($Mode -eq 0) {
+    Write-Host "⚠️ 警告: 即将移动 $($imageMatches.Count + $videoMatches.Count) 个源文件到备份目录" -ForegroundColor Red
+    Write-Host "备份目录: $BackupRoot" -ForegroundColor Yellow
+} else {
+    Write-Host "⚠️ 警告: 即将删除 $($imageMatches.Count + $videoMatches.Count) 个源文件" -ForegroundColor Red
+}
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
 Write-Host ""
 
 $confirm = $null
 do {
     $response = Read-Host "是否清理所有已压缩的源文件？(y/n)"
-    
+
     if ($response -match "^[yY]$") {
         $confirm = $true
         break
@@ -344,28 +370,53 @@ if (-not $confirm) {
 
 # === 执行删除 ===
 Write-Host ""
-Write-Host "正在删除文件..." -ForegroundColor Cyan
+if ($Mode -eq 0) {
+    Write-Host "正在移动文件到备份目录..." -ForegroundColor Cyan
+} else {
+    Write-Host "正在删除文件..." -ForegroundColor Cyan
+}
 
 $deletedCount = 0
 $errorCount = 0
 
 $allMatches | ForEach-Object {
     try {
-        Remove-Item -LiteralPath $_.Src.FullName -Force -ErrorAction Stop
-        $deletedCount++
+        if ($Mode -eq 0) {
+            # 备份模式：移动到备份目录，保持相同的相对路径
+            $backupPath = Join-Path $BackupRoot $_.RelativePath
+            $backupDir = Split-Path $backupPath -Parent
+
+            # 确保目标目录存在
+            if (-not (Test-Path $backupDir)) {
+                New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+            }
+
+            # 移动文件
+            Move-Item -LiteralPath $_.Src.FullName -Destination $backupPath -Force
+            $deletedCount++
+        } else {
+            # 删除模式：直接删除
+            Remove-Item -LiteralPath $_.Src.FullName -Force -ErrorAction Stop
+            $deletedCount++
+        }
     }
     catch {
-        Write-Host "  ✖ 删除失败: $($_.RelativePath) - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "  ✖ 操作失败: $($_.RelativePath) - $($_.Exception.Message)" -ForegroundColor Red
         $errorCount++
     }
 }
 
 # === 完成报告 ===
 Write-Host ""
-Write-Host "====================== 删除完成 ======================" -ForegroundColor Yellow
-Write-Host "  ✅ 成功删除: $deletedCount 个文件" -ForegroundColor Green
+if ($Mode -eq 0) {
+    Write-Host "====================== 移动完成 ======================" -ForegroundColor Yellow
+    Write-Host "  ✅ 成功移动: $deletedCount 个文件到备份目录" -ForegroundColor Green
+} else {
+    Write-Host "====================== 删除完成 ======================" -ForegroundColor Yellow
+    Write-Host "  ✅ 成功删除: $deletedCount 个文件" -ForegroundColor Green
+}
 if ($errorCount -gt 0) {
-    Write-Host "  ❌ 删除失败: $errorCount 个文件" -ForegroundColor Red
+    Write-Host "  ❌ 操作失败: $errorCount 个文件" -ForegroundColor Red
 }
 Write-Host "  💾 释放空间: $(Format-Size $totalSrcSize)" -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Yellow

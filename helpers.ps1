@@ -32,6 +32,9 @@ function Write-CompressionStatus {
 
     # 计算压缩率（小于100表示变小，大于100表示变大）
     $percent =  ($NewBytes / $SrcBytes * 100)
+    if ([double]::IsNaN($percent)) {
+        $percent = 0
+    }
     $percentStr = "{0:N1}%" -f $percent
         
     
@@ -67,12 +70,14 @@ function Write-CompressionStatus {
     Write-Host "$barEmpty" -NoNewline -ForegroundColor DarkGray
 
     if ($percent -le 100) {
+        $percentDisplay = "[{0,6}]" -f $percentStr
+        Write-Host $percentDisplay -ForegroundColor Green -NoNewline
         Write-Host " $srcStr → $newStr " -NoNewline
-        Write-Host "[$percentStr]" -ForegroundColor Green -NoNewline
         Write-Host " | $File" -ForegroundColor White
     } else {
+        $percentDisplay = "[{0,6}]" -f $percentStr
+        Write-Host $percentDisplay -ForegroundColor Red -NoNewline
         Write-Host " $srcStr → $newStr " -NoNewline
-        Write-Host "[$percentStr]" -ForegroundColor Red -NoNewline
         Write-Host " | $File" -ForegroundColor White
     }
 }
