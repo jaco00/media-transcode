@@ -1,9 +1,16 @@
 ﻿param(
-    [string]$Dir = ".",
+    [Parameter(Mandatory = $true)]
+    [string]$SourcePath,
     [int]$Duration = 20,
     [ValidateSet("start","middle")]
     [string]$Mode = "start"
 )
+
+# 解析目录路径
+if (-not (Test-Path -LiteralPath $SourcePath)) {
+    Write-Host "错误: 目录不存在: $SourcePath" -ForegroundColor Red
+    exit 1
+}
 
 $ffmpeg = Join-Path $PSScriptRoot "bin\ffmpeg.exe"
 $ffprobe = Join-Path $PSScriptRoot "bin\ffprobe.exe"
@@ -13,7 +20,7 @@ $recommendedPSNR = 30
 $recommendedSSIM = 0.95
 
 # 获取所有待处理文件
-$files = Get-ChildItem $Dir -File -Recurse | Where-Object { $_.Name -notmatch "\.h265\.mp4$" }
+$files = Get-ChildItem $SourcePath -File -Recurse | Where-Object { $_.Name -notmatch "\.h265\.mp4$" }
 $total = $files.Count
 
 if ($total -eq 0) {
@@ -40,8 +47,17 @@ for ($i=0; $i -lt $total; $i++) {
 
     if ($Mode -eq "middle") {
         # 尝试从 container 获取总时长（兼容 MKV / MP4 / HEVC）
-        $durStr = & $ffprobe -v error -show_entries format=duration -of csv=p=0 "`"$($file.FullName)`""
+        Write-Host "DEBUG: ffprobe path: '$ffprobe'" -ForegroundColor Yellow
+        Write-Host "DEBUG: file path: '$($file.FullName)'" -ForegroundColor Yellow
+        Write-Host "DEBUG: file exists: $(Test-Path $file.FullName)" -ForegroundColor Yellow
+        Write-Host "DEBUG: encoded path: '$encoded'" -ForegroundColor Yellow
+        Write-Host "DEBUG: encoded exists: $(Test-Path $encoded)" -ForegroundColor Yellow
+
+        $durStr = & $ffprobe -v error -show_entries format=duration -of csv=p=0 $file.FullName
         $dur = 0
+
+        Write-Host "DEBUG: ffprobe output: '$durStr'" -ForegroundColor Yellow
+        Write-Host "DEBUG: ffprobe exit code: $LASTEXITCODE" -ForegroundColor Yellow
 
         if ([double]::TryParse($durStr, [ref]$dur)) {
             # dur 是视频总时长，计算中间开始位置
@@ -67,11 +83,11 @@ for ($i=0; $i -lt $total; $i++) {
         "-nostats",
         "-ss", "$start",
         "-t", "$actualDuration",
-        "-i", "`"$($file.FullName)`"",
+        "-i", $file.FullName,
         "-ss", "$start",
         "-t", "$actualDuration",
-        "-i", "`"$encoded`"",
-        "-filter_complex", "`"[0:v][1:v]psnr;[0:v][1:v]ssim`"",
+        "-i", $encoded,
+        "-filter_complex", "[0:v][1:v]psnr;[0:v][1:v]ssim",
         "-f", "null", "-"
     )
 
