@@ -53,20 +53,20 @@ $processFuncText = ${function:Process-OneFile}.ToString()
 # 3. 模拟数据
 # ===============================
 $files = @(
-    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
+    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1524  }
     @{ Name = "b.png"; SrcSize = 5120;  NewSize = 2560  }
     @{ Name = "c.bmp"; SrcSize = 10240; NewSize = 15120 }
     @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
     @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
     @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
     @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
+    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 2000  }
     @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
     @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
-    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
-    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
-    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
-    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
-    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1024  }
+    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 1924  }
+    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 2024  }
+    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 124  }
+    @{ Name = "a.jpg"; SrcSize = 2048;  NewSize = 924  }
 )
 
 $total = $files.Count
@@ -81,7 +81,7 @@ foreach ($file in $files) {
     $r = Process-OneFile $file
 
     Write-CompressionStatus `
-        -File $_.File `
+        -File $r.File `
         -SrcBytes $r.SrcBytes `
         -NewBytes $r.NewBytes `
         -Index $index `

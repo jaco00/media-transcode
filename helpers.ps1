@@ -31,13 +31,10 @@ function Write-CompressionStatus {
     )
 
     # 计算压缩率（小于100表示变小，大于100表示变大）
-    $percent = 100 - ($NewBytes / $SrcBytes * 100)
-    $percentStr = if ($percent -ge 0) {
-        "{0:N1}%" -f $percent
-    } else {
-        # 负数表示文件变大，用红色显示
-        "{0:N1}%" -f -$percent
-    }
+    $percent =  ($NewBytes / $SrcBytes * 100)
+    $percentStr = "{0:N1}%" -f $percent
+        
+    
 
     $indexWidth = ($Total).ToString().Length
     $indexStr = $("[{0," + $indexWidth + "}/{1," + $indexWidth + "}]") -f $Index, $Total
@@ -45,7 +42,7 @@ function Write-CompressionStatus {
     # 进度条长度
     $progressBarLength = 10
     # 如果文件变大，进度条长度应该是 0，否则按压缩比例填充
-    $filledLength = if ($percent -ge 0) { [math]::Round($progressBarLength * [math]::Min([math]::Abs($percent) / 100, 1)) } else { 0 }
+    $filledLength = [math]::Round($progressBarLength * [math]::Min([math]::Abs($percent) / 100, 1))
     
     # 填充进度条
     $barFilled = "█" * $filledLength
@@ -59,17 +56,17 @@ function Write-CompressionStatus {
     # 输出：图标/序号 Cyan，进度条颜色根据压缩或膨胀变化，大小/百分比 Yellow，文件名 Cyan
     Write-Host "$icon $indexStr " -NoNewline -ForegroundColor Cyan
 
-    if ($percent -ge 0) {
+    if ($percent -le 90) {
         # 压缩后变小，进度条用绿色
         Write-Host "$barFilled" -NoNewline -ForegroundColor Green
     } else {
-        # 压缩后变大，进度条显示为空
-        Write-Host "$barFilled" -NoNewline -ForegroundColor DarkGray
+    
+        Write-Host "$barFilled" -NoNewline -ForegroundColor Red
     }
     
     Write-Host "$barEmpty" -NoNewline -ForegroundColor DarkGray
 
-    if ($percent -ge 0) {
+    if ($percent -le 100) {
         Write-Host " $srcStr → $newStr " -NoNewline
         Write-Host "[$percentStr]" -ForegroundColor Green -NoNewline
         Write-Host " | $File" -ForegroundColor White
