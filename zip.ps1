@@ -372,7 +372,7 @@ function Process-Image {
     }
 
     $avifOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".avif")
-    # 用户要求直接输出为 avif，不再使用 .tmp 后缀，避免工具识别问题
+    $tempOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".tmp")
     
     try {
 
@@ -399,8 +399,8 @@ function Process-Image {
                 $nconvertArgs += "-quiet"
             }
 
-            # 输出文件 (直接写 avif)
-            $nconvertArgs += @("-o", $avifOut)
+            # 输出文件 (先写 tmp)
+            $nconvertArgs += @("-o", $tempOut)
 
             # 输入文件
             $nconvertArgs += $src
@@ -422,12 +422,17 @@ function Process-Image {
                 throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $($config.NConvertExe) $nconvertArgStr"
             }
 
+            # 转换成功后重命名
+            if (Test-Path $tempOut) {
+                Move-Item $tempOut $avifOut -Force
+            }
+
         }
         else {
             # 转换普通文件 (jpg, png)，使用 Avifenc
             $avifArgs = @()
             if ($config.encoderOptions) { $avifArgs += $config.encoderOptions }
-            $avifArgs += @("-q", $config.AvifQuality, $src, $avifOut)
+            $avifArgs += @("-q", $config.AvifQuality, $src, $tempOut)
 
             # 构造参数字符串用于诊断
             $avifArgStr = "$($avifArgs -join ' ')"
@@ -443,19 +448,25 @@ function Process-Image {
             if ($LASTEXITCODE -ne 0) {
                 throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $($config.AvifEncExe) $avifArgStr`n错误信息: $($output -join "`n")"
             }
+
+            # 转换成功后重命名
+            if (Test-Path $tempOut) {
+                Move-Item $tempOut $avifOut -Force
+            }
+
             # 获取转换后的文件大小
             
         }
 
         # 重新获取源文件大小，避免并发时 $file.Length 不准确
-       
+
         $newSize = (Get-Item $avifOut).Length
 
         
     }
     catch {
-        # 清理失败 (如果存在部分写入的文件)
-        if (Test-Path $avifOut) { Remove-Item $avifOut -Force -ErrorAction SilentlyContinue }
+        # 清理失败 (如果存在部分写入的临时文件)
+        if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
         # 在并行模式下，使用 Write-Host 配合颜色提示失败
         Write-Host "✖ 处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
 
@@ -478,6 +489,13 @@ function Process-Image {
             NewBytes = 0  # 返回失败时的 NewBytes 设为 0
         }
     }
+    finally {
+        # 清理临时文件 (.tmp)
+        if (Test-Path $tempOut) {
+            Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
+            Write-Host "临时文件已删除: $tempOut" -ForegroundColor Green
+        }
+    }
     [pscustomobject]@{
         File     = $src
         SrcBytes = $actualOldSize
@@ -488,9 +506,15 @@ function Process-Image {
 
 # ---------- 执行处理 (统一入口) ----------
 if ($files.Count -gt 0) {
-    
+
     $BackupEnabled = ($Mode -eq 0) # 只有 Mode 0 (备份模式) 启用备份
-    
+
+    # 统计变量
+    $imageSuccessCount = 0
+    $imageFailedCount = 0
+    $imageSrcBytes = 0
+    $imageNewBytes = 0
+
     # 构造配置对象 (用于传递给并行/顺序脚本块)
     $scriptConfig = @{
         InputRoot      = $InputRoot
@@ -512,9 +536,9 @@ if ($files.Count -gt 0) {
     if ($parallelEnabled) {
         $totalCount = $files.Count
         $range = if ($totalCount -gt 0) { 0..($totalCount - 1) } else { @() }
-        
+
         # 必须先转为字符串，因为 ForEach-Object -Parallel 不支持直接传递 $using:ScriptBlock
-       
+
         $processFunc = ${function:Process-Image}.ToString()
 
         $index = 0
@@ -524,16 +548,16 @@ if ($files.Count -gt 0) {
             $localFiles = $using:files
             $file = $localFiles[$index]
             $total = $using:totalCount
-            
+
             $progress = "$($index + 1)/$total"
-            
+
             # 在子线程中重建脚本块
             Set-Item -Path function:Process-Image -Value ([ScriptBlock]::Create($using:processFunc))
 
             # 只做事，不输出
-            Process-Image $file $localConfig 
+            Process-Image $file $localConfig
             # $sb = [ScriptBlock]::Create($using:sbStr)
-            # & $sb $file $localConfig 
+            # & $sb $file $localConfig
         } -ThrottleLimit $MaxThreads |
         ForEach-Object {
 
@@ -546,6 +570,15 @@ if ($files.Count -gt 0) {
                 -NewBytes $_.NewBytes `
                 -Index $index `
                 -Total $totalCount
+
+            # 统计
+            $script:imageSrcBytes += $_.SrcBytes
+            if ($_.NewBytes -gt 0) {
+                $script:imageNewBytes += $_.NewBytes
+                $script:imageSuccessCount++
+            } else {
+                $script:imageFailedCount++
+            }
         }
 
     }
@@ -554,7 +587,17 @@ if ($files.Count -gt 0) {
         $i = 1
         $totalCount = $files.Count
         $files | ForEach-Object {
-            Process-Image $_ $scriptConfig
+            $result = Process-Image $_ $scriptConfig
+
+            # 统计
+            $imageSrcBytes += $result.SrcBytes
+            if ($result.NewBytes -gt 0) {
+                $imageNewBytes += $result.NewBytes
+                $imageSuccessCount++
+            } else {
+                $imageFailedCount++
+            }
+
             $i++
         }
     }
@@ -564,7 +607,13 @@ if ($files.Count -gt 0) {
 if ($videoFiles.Count -gt 0) {
     Write-Host ""
     Write-Host ">>> 开始处理视频 (顺序执行)..." -ForegroundColor Magenta
-    
+
+    # 视频统计
+    $videoSuccessCount = 0
+    $videoFailedCount = 0
+    $videoSrcBytes = 0
+    $videoNewBytes = 0
+
     $i = 1
     $totalVideos = $videoFiles.Count
     foreach ($file in $videoFiles) {
@@ -661,22 +710,28 @@ if ($videoFiles.Count -gt 0) {
 
             Write-CompressionStatus -File $rel -SrcBytes $actualOldSize -NewBytes $newSize -Index $i -Total $totalVideos
 
+            # 统计
+            $videoSrcBytes += $actualOldSize
+            $videoNewBytes += $newSize
+            $videoSuccessCount++
+
             if ($Mode -eq 0) {
                 # 修正变量名
                 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
                 Move-Item $src $backup -Force
                 Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
             }
-                
+
             $i++
         }
         catch {
             Write-Host "✖ 视频处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
+            $videoFailedCount++
         }
         finally {
             # 强制清理临时文件
             if (Test-Path $tempOut) {
-                Remove-Item $tempOut -Force -ErrorAction SilentlyContinue 
+                Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
                 Write-Host "[清理] 已移除临时文件: $tempOut" -ForegroundColor Gray
             }
         }
@@ -685,4 +740,39 @@ if ($videoFiles.Count -gt 0) {
 
 
 
+
+
+Write-Host ""
+Write-Host "====================== 处理完成统计 ======================" -ForegroundColor Yellow
+
+if ($files.Count -gt 0) {
+    $imageTotalCount = $imageSuccessCount + $imageFailedCount
+    Write-Host "📸 图片处理: 成功 $imageSuccessCount 个, 失败 $imageFailedCount 个" -ForegroundColor Cyan
+    if ($imageTotalCount -gt 0) {
+        $imageSaved = $imageSrcBytes - $imageNewBytes
+        $imageSavedStr = Format-Size $imageSaved
+        Write-Host "   原大小: $(Format-Size $imageSrcBytes) → 转换后: $(Format-Size $imageNewBytes) | 节省: $imageSavedStr" -ForegroundColor Green
+    }
+}
+
+if ($videoFiles.Count -gt 0) {
+    $videoTotalCount = $videoSuccessCount + $videoFailedCount
+    Write-Host "🎬 视频处理: 成功 $videoSuccessCount 个, 失败 $videoFailedCount 个" -ForegroundColor Cyan
+    if ($videoTotalCount -gt 0) {
+        $videoSaved = $videoSrcBytes - $videoNewBytes
+        $videoSavedStr = Format-Size $videoSaved
+        Write-Host "   原大小: $(Format-Size $videoSrcBytes) → 转换后: $(Format-Size $videoNewBytes) | 节省: $videoSavedStr" -ForegroundColor Green
+    }
+}
+
+$totalSrcBytes = $imageSrcBytes + $videoSrcBytes
+$totalNewBytes = $imageNewBytes + $videoNewBytes
+if ($totalSrcBytes -gt 0) {
+    $totalSaved = $totalSrcBytes - $totalNewBytes
+    $totalSavedStr = Format-Size $totalSaved
+    $totalPercent = [math]::Round(($totalNewBytes / $totalSrcBytes) * 100, 1)
+    Write-Host "💾 总计节省: $totalSavedStr ($(Format-Size $totalSrcBytes) → $(Format-Size $totalNewBytes), $totalPercent%)" -ForegroundColor Green
+}
+
+Write-Host "==========================================================" -ForegroundColor Yellow
 Write-Host "全部完成 ✅ 可随时中断 / 重跑" -ForegroundColor Yellow
