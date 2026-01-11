@@ -4,7 +4,7 @@
 
 param(
     [string]$SourcePath = "",      # 源目录
-    [int]$Quality = 80,                 # AVIF 质量模式 (-q)。根据用户测试，数值越高，画质越清晰 (80 为高质量，范围 0-100)。
+    [int]$AvifQuality = 80,                 # AVIF 质量模式 (-q)。根据用户测试，数值越高，画质越清晰 (80 为高质量，范围 0-100)。
     [string]$BackupDirName = "", # 备份目录
     [string[]]$IncludeDirs = @(),        # 只扫描 SourcePath 下的指定子目录（例如 '2023','2024'）。为空则扫描所有。
     [int]$MaxThreads = 8,                 # 并行处理的最大线程数。0 或 1 表示顺序处理。
@@ -16,6 +16,21 @@ param(
     [string]$CRF = "21",                 # CPU 视频质量 (CRF)
     [string]$CQ = "22"                   # GPU 视频质量 (CQ)
 )
+
+# 读取配置文件
+$configFile = Join-Path $PSScriptRoot "config.json"
+if (Test-Path $configFile) {
+    Write-Host "✅ 已加载配置文件: config.json" -ForegroundColor Green
+    $configData = Get-Content $configFile | ConvertFrom-Json
+    if ($null -ne $configData.AvifQuality) { [int]$AvifQuality = $configData.AvifQuality }
+    if ($null -ne $configData.MaxThreads) { [int]$MaxThreads = $configData.MaxThreads }
+    if ($null -ne $configData.HeicQuality) { [int]$HeicQuality = $configData.HeicQuality }
+    if ($null -ne $configData.AVIFJobs) { [int]$AVIFJobs = $configData.AVIFJobs }
+    if ($null -ne $configData.AvifColorOptions) { [string]$AvifColorOptions = $configData.AvifColorOptions }
+    if ($null -ne $configData.Codec) { [string]$Codec = $configData.Codec }
+    if ($null -ne $configData.CRF) { [string]$CRF = $configData.CRF }
+    if ($null -ne $configData.CQ) { [string]$CQ = $configData.CQ }
+}
 
 . "$PSScriptRoot\helpers.ps1"
 
@@ -106,13 +121,13 @@ if ($true) {
         $defaultVideoQuality = $CQ
     }
     
-    $UseDefaultQuality = Read-Host "是否使用默认质量设置 (HEIC: $HeicQuality, AVIF: $Quality, $videoQualityLabel = $defaultVideoQuality) ? (Y/N) [默认: Y]"
+    $UseDefaultQuality = Read-Host "是否使用默认质量设置 (HEIC: $HeicQuality, AVIF: $AvifQuality, $videoQualityLabel = $defaultVideoQuality) ? (Y/N) [默认: Y]"
     if ($UseDefaultQuality -match '^[Nn]') {
         $InputHeicQuality = Read-Host "请输入 HEIC 转换质量 (HeicQuality) [默认: $HeicQuality]"
         $HeicQuality = if ([string]::IsNullOrWhiteSpace($InputHeicQuality)) { $HeicQuality } else { [int]$InputHeicQuality }
 
-        $InputQuality = Read-Host "请输入 AVIF 质量 (0-100) [默认: $Quality]"
-        $Quality = if ([string]::IsNullOrWhiteSpace($InputQuality)) { $Quality } else { [int]$InputQuality }
+        $InputAvifQuality = Read-Host "请输入 AVIF 质量 (0-100) [默认: $AvifQuality]"
+        $AvifQuality = if ([string]::IsNullOrWhiteSpace($InputAvifQuality)) { $AvifQuality } else { [int]$InputAvifQuality }
         
         if ($useGpu) {
             $InputVideoQuality = Read-Host "请输入 NVIDIA 显卡压缩质量 (CQ, 建议 25-30) [默认: $CQ]"
@@ -285,7 +300,7 @@ if ($SkipExisting) {
 Write-Host " 扫描子目录: $($IncludeDirs -join ', ')" -ForegroundColor Green
 Write-Host " 最大线程: $MaxThreads" -ForegroundColor Green
 Write-Host " HEIC质量: $HeicQuality" -ForegroundColor Green
-Write-Host " AVIF质量: $Quality" -ForegroundColor Green
+Write-Host " AVIF质量: $AvifQuality" -ForegroundColor Green
 if ($useGpu) {
     Write-Host " 视频转码: $Codec (CQ: $CQ)" -ForegroundColor Green
 }
@@ -412,7 +427,7 @@ function Process-Image {
             # 转换普通文件 (jpg, png)，使用 Avifenc
             $avifArgs = @()
             if ($config.encoderOptions) { $avifArgs += $config.encoderOptions }
-            $avifArgs += @("-q", $config.Quality, $src, $avifOut)
+            $avifArgs += @("-q", $config.AvifQuality, $src, $avifOut)
 
             # 构造参数字符串用于诊断
             $avifArgStr = "$($avifArgs -join ' ')"
@@ -485,7 +500,7 @@ if ($files.Count -gt 0) {
         ShowDetails    = $ShowDetails
         encoderOptions = $encoderOptions
 
-        Quality        = $Quality
+        AvifQuality    = $AvifQuality
         Mode           = $Mode
         BackupEnabled  = $BackupEnabled
 

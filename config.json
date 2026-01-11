@@ -1,0 +1,10 @@
+{
+    "AvifQuality": 80,
+    "MaxThreads": 8,
+    "HeicQuality": 76,
+    "AVIFJobs": 1,
+    "AvifColorOptions": "-y 444",
+    "Codec": "libx265",
+    "CRF": "21",
+    "CQ": "22"
+}
