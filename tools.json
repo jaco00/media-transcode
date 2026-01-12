@@ -1,0 +1,36 @@
+{
+  "defaultTool": "avifenc",
+  "tools": {
+    "avifenc": {
+      "path": "",
+      "category":"image",
+      "priority": 1,
+      "format": [".jpg", ".jpeg", ".png"],
+      "template": "--speed 6 --jobs 1 -y 444 -q $QUALITY $IN $OUT"
+    },
+    "magick": {
+      "path": "",
+      "category":"image",
+      "priority": 99,
+      "format":[".jpg",".jpeg",".png"],
+      "template": "-quality $QUALITY $IN $OUT"
+    },
+    "nconvert": {
+      "path":"",
+      "category":"image",
+      "priority": 1,
+      "format":[".heic",".heif"],
+      "path": "",
+      "template": "-out avif -q $QUALITY -keep_icc -overwrite -o $OUT $IN "
+    },
+    "ffmpeg": {
+      "path":"",
+      "category":"video",
+      "priority": 1,
+      "format":[".mp4",".mov",".wmv",".avi",".mkv"],
+      "path": "D:/photo_script/bin/ffmpeg.exe",
+      "gpu_template": "-y -hide_banner -c:v libx265 -loglevel warning -stats -x265-params log-level=error -cq $QUALITY -preset p4 -c:a aac -movflags +faststart -pix_fmt yuv420p -f mp4 -i $IN $OUT",
+      "cpu_template": "-y -hide_banner -c:v libx265 -loglevel warning -stats -x265-params log-level=error -crf $QUALITY -preset medium -c:a aac -movflags +faststart -pix_fmt yuv420p -f mp4 -i $IN  $OUT"
+    }
+  }
+}
