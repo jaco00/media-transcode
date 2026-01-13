@@ -3,34 +3,92 @@
   "tools": {
     "avifenc": {
       "path": "",
-      "category":"image",
+      "category": "image",
       "priority": 1,
       "format": [".jpg", ".jpeg", ".png"],
-      "template": "--speed 6 --jobs 1 -y 444 -q $QUALITY $IN $OUT"
+      "template_parameters": {
+        "QUALITY": 80
+      },
+      "parameters": [
+        ["--speed", "6"],
+        ["--jobs", "1"],
+        ["-y", "444"],
+        ["-q", "$QUALITY$"],
+        ["$IN$", "$OUT$"]
+      ]
     },
     "magick": {
       "path": "",
-      "category":"image",
+      "category": "image",
       "priority": 99,
-      "format":[".jpg",".jpeg",".png"],
-      "template": "-quality $QUALITY $IN $OUT"
+      "format": [".jpg", ".jpeg", ".png"],
+      "template_parameters": {
+        "QUALITY": 75
+      },
+      "parameters": [
+        ["-quality", "$QUALITY$"],
+        ["$IN$", "$OUT$"]
+      ]
     },
     "nconvert": {
-      "path":"",
-      "category":"image",
-      "priority": 1,
-      "format":[".heic",".heif"],
       "path": "",
-      "template": "-out avif -q $QUALITY -keep_icc -overwrite -o $OUT $IN "
+      "category": "image",
+      "priority": 1,
+      "format": [".heic", ".heif"],
+      "template_parameters": {
+        "QUALITY": 75
+      },
+      "parameters": [
+        ["-out", "avif"],
+        ["-keep_icc"],
+        ["-overwrite"],
+        ["-q", "$QUALITY$"],
+        ["-o", "$OUT$"],
+        ["$IN$"]
+      ]
     },
     "ffmpeg": {
-      "path":"",
-      "category":"video",
+      "path": "",
+      "category": "video",
       "priority": 1,
-      "format":[".mp4",".mov",".wmv",".avi",".mkv"],
-      "path": "D:/photo_script/bin/ffmpeg.exe",
-      "gpu_template": "-y -hide_banner -c:v libx265 -loglevel warning -stats -x265-params log-level=error -cq $QUALITY -preset p4 -c:a aac -movflags +faststart -pix_fmt yuv420p -f mp4 -i $IN $OUT",
-      "cpu_template": "-y -hide_banner -c:v libx265 -loglevel warning -stats -x265-params log-level=error -crf $QUALITY -preset medium -c:a aac -movflags +faststart -pix_fmt yuv420p -f mp4 -i $IN  $OUT"
+      "format": [".mp4", ".mov", ".wmv", ".avi", ".mkv"],
+      "modes": {
+        "gpu": {
+          "template_parameters": {
+            "CQ": 21
+          },
+          "parameters": [
+            ["-y"], ["-hide_banner"], ["-loglevel", "warning"], ["-stats"],
+            ["-i", "$IN$"],
+            ["-c:v", "hevc_nvenc"],
+            ["-cq", "$CQ$"],
+            ["-preset", "p4"],
+            ["-c:a", "aac"],
+            ["-movflags", "+faststart"],
+            ["-pix_fmt", "yuv420p"],
+            ["-f", "mp4"],
+            ["$OUT$"]
+          ]
+        },
+        "cpu": {
+          "template_parameters": {
+            "CRF": 23
+          },
+          "parameters": [
+            ["-y"], ["-hide_banner"], ["-loglevel", "warning"], ["-stats"],
+            ["-i", "$IN$"],
+            ["-c:v", "libx265"],
+            ["-x265-params", "log-level=error"],
+            ["-crf", "$CRF$"],
+            ["-preset", "medium"],
+            ["-c:a", "aac"],
+            ["-movflags", "+faststart"],
+            ["-pix_fmt", "yuv420p"],
+            ["-f", "mp4"],
+            ["$OUT$"]
+          ]
+        }
+      }
     }
   }
 }

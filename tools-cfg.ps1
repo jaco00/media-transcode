@@ -1,5 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-# config_parser.ps1 —— 用于解析 tools.json 并提供命令行填充接口
+# config_parser.ps1 —— 用于解析 tool_config.json 并提供命令行填充接口
 
 # --- 脚本作用域变量 ---
 $script:ConfigJson = $null
@@ -7,12 +7,8 @@ $script:ConfigJson = $null
 # --- 1. 内部函数：加载配置 ---
 function Load-ToolConfig {
     $ConfigName = "tools.json"
-    
-    # 获取脚本所在的真实物理路径
     $ScriptDir = $PSScriptRoot
-    if (-not $ScriptDir) { 
-        $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition 
-    }
+    if (-not $ScriptDir) { $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
 
     $PossiblePaths = @(
         (Join-Path $ScriptDir $ConfigName),
@@ -21,216 +17,273 @@ function Load-ToolConfig {
 
     $SelectedPath = $null
     foreach ($path in $PossiblePaths) {
-        if (Test-Path -LiteralPath $path) {
-            $SelectedPath = $path
-            break
-        }
+        if (Test-Path -LiteralPath $path) { $SelectedPath = $path; break }
     }
 
-    if (-not $SelectedPath) {
-        Write-Warning "未能在以下路径找到 $ConfigName : $($PossiblePaths -join ', ')"
-        return $null
-    }
+    if (-not $SelectedPath) { Write-Warning "未找到 $ConfigName"; return $null }
 
     try {
         $RawContent = Get-Content -LiteralPath $SelectedPath -Raw -Encoding UTF8
         $script:ConfigJson = $RawContent | ConvertFrom-Json
-        if (-not $script:ConfigJson.tools) {
-            Write-Error "JSON 格式非法：缺少 'tools' 节点"
-            return $null
-        }
+        return $script:ConfigJson
     } catch {
-        Write-Error "解析 $ConfigName 失败: $($_.Exception.Message)"
+        Write-Error "解析 JSON 失败: $($_.Exception.Message)"
         return $null
     }
-    return $script:ConfigJson
 }
 
-# --- 2. 内部函数：解析工具路径 ---
+# --- 2. 解析工具路径 ---
 function Resolve-ToolExe {
     param(
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory)]
         [string]$ExeName
     )
 
-    # 尝试解析脚本目录
+    if ($ExeName -notmatch "\.exe$") { $ExeName += ".exe" }
+
+
+    # 使用 $PSScriptRoot 获取脚本目录（更可靠）
     $scriptDir = $PSScriptRoot
-    if (-not $scriptDir) { 
-        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    }
-    if (-not $scriptDir) { $scriptDir = (Get-Location).Path }
-
-    # 检查 bin 目录
-    $binDir = Join-Path $scriptDir "bin"
-    $binExe = Join-Path $binDir $ExeName
-    # 兼容没有扩展名的情况
-    if ($ExeName -notmatch "\.exe$") { $binExe += ".exe" }
-
-    $toolPath = $null
-
-    # 1. 先找 bin 目录
-    if (Test-Path -LiteralPath $binExe) {
-        $toolPath = $binExe
-    }
-    # 2. 再找系统 PATH
-    elseif ($cmd = Get-Command $ExeName -ErrorAction SilentlyContinue) {
-        $toolPath = $cmd.Path
-    }
-    else {
-        # 如果还是找不到，且输入本身看起来像完整路径，则直接返回
-        if (Test-Path -LiteralPath $ExeName) { return $ExeName }
-        Write-Warning "未找到可用的 $ExeName（不在 bin 目录或 PATH 中）"
-        return $ExeName 
-    }
-
-    return $toolPath
-}
-
-# --- 3. 内部函数：生成命令字符串模板 ---
-function Get-CommandTemplate {
-    param(
-        [array]$RawParams,
-        [object]$TemplateParams
-    )
-    
-    $FinalParts = @()
-    foreach ($pair in $RawParams) {
-        foreach ($item in $pair) {
-            $val = $item.ToString()
-            # 替换模板自定义变量 (如 $QUALITY$)
-            if ($val.Contains('$') -and $TemplateParams) {
-                foreach ($prop in $TemplateParams.PSObject.Properties) {
-                    $key = "`$($prop.Name)`$"
-                    if ($val.Contains($key)) {
-                        $val = $val.Replace($key, $prop.Value.ToString())
-                    }
-                }
-            }
-            $FinalParts += $val
+    if (-not $scriptDir) {
+        # 备用方案：从当前脚本路径解析
+        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+        if (-not $scriptDir) {
+            $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+        }
+        if (-not $scriptDir) {
+            $scriptDir = (Get-Location).Path
         }
     }
-    # 返回空格分隔的参数字符串
-    return $FinalParts -join " "
-}
 
-# --- 4. 接口函数：获取所有受支持的扩展名 ---
-function Get-SupportedExtensions {
-    if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @() } }
-    $formats = @()
-    foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
-        $Tool = $script:ConfigJson.tools.$ToolName
-        if ($Tool.format) { $formats += $Tool.format }
+    # bin 目录
+    $binDir = Join-Path $scriptDir "bin"
+    $binExe = Join-Path $binDir $ExeName
+
+     
+    $toolPath = $null
+
+    # 先找 bin
+    if (Test-Path -LiteralPath $binExe) {
+        $toolPath = $binExe
+        #Write-Host "[找到工具] bin 目录: $binExe" -ForegroundColor DarkGreen
     }
-    return $formats | Select-Object -Unique | Sort-Object
+    # 再找 PATH
+    elseif ($cmd = Get-Command $ExeName -ErrorAction SilentlyContinue) {
+        $toolPath = $cmd.Path
+        #Write-Host "[找到工具] PATH: $toolPath" -ForegroundColor DarkGreen
+    }
+    else {
+        throw "未找到可用的 $ExeName（bin 或 PATH）"
+    }
+
+    # 测试可执行性
+    try {
+        & "$toolPath" -version *> $null
+        Write-Host "[命令测试] $toolPath 可执行 ✅" -ForegroundColor Green
+        return $toolPath
+    }
+    catch {
+        throw "$ExeName 找到路径 $toolPath，但无法运行"
+    }
 }
 
-# --- 5. 核心接口：获取命令 Map (Key: ToolID -> Value: CmdObj) ---
-function Get-CommandMap {
+
+# --- 3. 交互逻辑：参数确认与修改 ---
+function Invoke-ParameterInteraction {
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$Format
+        [ValidateSet("image", "video", "all")]
+        [string]$Type = "all",
+        [bool]$UseGpu = $true,
+        [bool]$Silent = $false
     )
 
     if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @{} } }
-    
-    $CommandMap = @{}
-    $FormatLower = $Format.Trim().ToLower()
-    if (-not $FormatLower.StartsWith(".")) { $FormatLower = ".$FormatLower" }
+
+    $ToolList = @() # 预扫描符合条件的工具
+    foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
+        $Tool = $script:ConfigJson.tools.$ToolName
+        if ($Type -ne "all" -and $Tool.category -ne $Type) { continue }
+        
+        if ($Tool.category -eq "video" -and $Tool.modes) {
+            $targetMode = if ($UseGpu) { "gpu" } else { "cpu" }
+            if ($Tool.modes.$targetMode) {
+                $tParams = if ($Tool.modes.$targetMode.template_parameters) { $Tool.modes.$targetMode.template_parameters } else { $Tool.template_parameters }
+                $ToolList += [pscustomobject]@{ Name = $ToolName; Mode = $targetMode; Params = $tParams; Category = $Tool.category }
+            }
+        } else {
+            $ToolList += [pscustomobject]@{ Name = $ToolName; Mode = "default"; Params = $Tool.template_parameters; Category = $Tool.category }
+        }
+    }
+
+    $FinalParamsMap = @{}
+
+    # --- 逻辑 A: 静默模式 ---
+    if ($Silent) {
+        foreach ($item in $ToolList) {
+            if (-not $FinalParamsMap.ContainsKey($item.Name)) { $FinalParamsMap[$item.Name] = @{} }
+            $FinalParamsMap[$item.Name][$item.Mode] = Get-DefaultParams -Template $item.Params
+        }
+        return $FinalParamsMap
+    }
+
+    # --- 逻辑 B: 非静默模式 (展示所有 -> 询问确认 -> 可选修改) ---
+    Write-Host "`n===============================================" -ForegroundColor Gray
+    Write-Host "   🚀 待执行工具及默认参数预览" -ForegroundColor Cyan
+    Write-Host "===============================================" -ForegroundColor Gray
+
+    foreach ($item in $ToolList) {
+        $icon = if ($item.Category -eq "video") { "🎬" } else { "📸" }
+        
+        Write-Host " $icon [$($item.Name)]" -NoNewline -ForegroundColor Yellow
+        if ($item.Mode -ne "default") {
+            $modeColor = if ($item.Mode -eq "gpu") { "Green" } else { "Magenta" }
+            Write-Host " ($($item.Mode))" -ForegroundColor $modeColor
+        } else {
+            Write-Host ""
+        }
+
+        $defaults = Get-DefaultParams -Template $item.Params
+        if ($defaults.Count -eq 0) {
+            Write-Host "    (无自定义参数)" -ForegroundColor Gray
+        } else {
+            foreach ($k in $defaults.Keys) {
+                # 修复：PowerShell 中 "$k: " 会被误认为驱动器引用。使用 "${k}: " 明确范围。
+                Write-Host "    - ${k}: " -NoNewline -ForegroundColor DarkGray
+                Write-Host "$($defaults[$k])" -ForegroundColor Green
+            }
+        }
+       
+    }
+
+    $needModify = Read-Host "确认使用以上默认值请按 [回车]，如需修改参数请输入 [y]"
+    $doModify = ($needModify -match "^[yY]$")
+
+    foreach ($item in $ToolList) {
+        if (-not $FinalParamsMap.ContainsKey($item.Name)) { $FinalParamsMap[$item.Name] = @{} }
+        
+        $currentDefaults = Get-DefaultParams -Template $item.Params
+        if ($doModify -and $currentDefaults.Count -gt 0) {
+            $label = if ($item.Mode -eq "default") { $item.Name } else { "$($item.Name) ($($item.Mode))" }
+            Write-Host "`n--- 正在修改 [$label] 的参数 ---" -ForegroundColor Cyan
+            $modified = @{}
+            foreach ($k in $currentDefaults.Keys) {
+                $input = Read-Host "请输入 $k (当前: $($currentDefaults[$k]))"
+                $modified[$k] = if ([string]::IsNullOrWhiteSpace($input)) { $currentDefaults[$k] } else { $input }
+            }
+            $FinalParamsMap[$item.Name][$item.Mode] = $modified
+        } else {
+            $FinalParamsMap[$item.Name][$item.Mode] = $currentDefaults
+        }
+    }
+
+    return $FinalParamsMap
+}
+
+# 辅助函数：仅获取默认值，不进行交互
+function Get-DefaultParams {
+    param($Template)
+    $res = @{}
+    if ($null -eq $Template) { return $res }
+    foreach ($prop in $Template.PSObject.Properties) {
+        $res[$prop.Name] = $prop.Value.ToString()
+    }
+    return $res
+}
+
+# --- 4. 核心接口：获取分层有序命令 Map ---
+function Get-CommandMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [Hashtable]$UserParamsMap
+    )
+
+    if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @{} } }
+    $MasterMap = @{}
+
+    foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
+        if (-not $UserParamsMap.ContainsKey($ToolName)) { continue }
+
+        $Tool = $script:ConfigJson.tools.$ToolName
+        $ExeNameForLookup = if ($Tool.path -and $Tool.path -ne "") { $Tool.path } else { $ToolName }
+        $ResolvedPath = if ($ExeNameForLookup -notmatch "[\\/]") { Resolve-ToolExe -ExeName $ExeNameForLookup } else { $ExeNameForLookup }
+        $SafePath = if ($ResolvedPath -and $ResolvedPath.Contains(" ") -and -not $ResolvedPath.StartsWith('"')) { "`"$ResolvedPath`"" } else { $ResolvedPath }
+        $Priority = if ($null -ne $Tool.priority) { [int]$Tool.priority } else { 99 }
+
+        foreach ($ext in $Tool.format) {
+            $extLower = $ext.ToLower().Trim()
+            if (-not $extLower.StartsWith(".")) { $extLower = ".$extLower" }
+
+            foreach ($modeName in $UserParamsMap[$ToolName].Keys) {
+                $modeKey = if ($modeName -eq "default") { $extLower } else { "$extLower`_$modeName" }
+                if (-not $MasterMap.ContainsKey($modeKey)) { $MasterMap[$modeKey] = New-Object System.Collections.Generic.List[PSObject] }
+
+                $rawArgsDef = if ($Tool.modes) { $Tool.modes.$modeName.parameters } else { $Tool.parameters }
+                $finalValues = $UserParamsMap[$ToolName][$modeName]
+
+                $processedArgs = [System.Collections.Generic.List[string]]::new()
+                foreach ($argLine in $rawArgsDef) {
+                    foreach ($arg in $argLine) {
+                        $val = $arg.ToString()
+                        foreach ($pk in $finalValues.Keys) {
+                            $placeholder = "`$$($pk.ToUpperInvariant())`$" 
+                            $val = $val.Replace($placeholder, $finalValues[$pk])
+                        }
+                        $processedArgs.Add($val)
+                    }
+                }
+
+                $MasterMap[$modeKey].Add([pscustomobject]@{
+                    ToolName    = $ToolName
+                    Mode        = $modeName
+                    ArgsArray   = $processedArgs.ToArray()
+                    Priority    = $Priority
+                    Path        = $ResolvedPath
+                    SafePath    = $SafePath
+                    Category    = $Tool.category
+                })
+            }
+        }
+    }
+
+    $FinalMap = @{}
+    foreach ($key in $MasterMap.Keys) {
+        $FinalMap[$key] = $MasterMap[$key] | Sort-Object Priority | ForEach-Object { $_ }
+    }
+    return $FinalMap
+}
+
+# --- 5. 获取支持的扩展名 ---
+function Get-SupportedExtensions {
+    if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @{ image = @(); video = @() } } }
+    $imageExts = [System.Collections.Generic.HashSet[string]]::new()
+    $videoExts = [System.Collections.Generic.HashSet[string]]::new()
 
     foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
         $Tool = $script:ConfigJson.tools.$ToolName
-        $supportedFormats = $Tool.format | ForEach-Object { $_.Trim().ToLower() }
-        
-        if ($supportedFormats -contains $FormatLower) {
-            # 路径解析逻辑：如果 path 为空或仅为文件名，则尝试 Resolve
-            $RawPath = $Tool.path
-            $ResolvedPath = $null
-
-            if ([string]::IsNullOrWhiteSpace($RawPath)) {
-                # 如果为空，默认使用工具节点的名称作为文件名查找
-                $ResolvedPath = Resolve-ToolExe -ExeName $ToolName
-            } elseif ($RawPath -notmatch "[\\/]") {
-                # 如果只是文件名 (不含路径符)，尝试 Resolve
-                $ResolvedPath = Resolve-ToolExe -ExeName $RawPath
-            } else {
-                # 已经是路径，直接使用
-                $ResolvedPath = $RawPath
-            }
-
-            # 处理引号
-            $SafePath = $ResolvedPath
-            if (-not ($SafePath.StartsWith('"')) -and $SafePath.Contains(" ")) { 
-                $SafePath = "`"$SafePath`"" 
-            }
-
-            if ($Tool.modes) {
-                foreach ($mProp in $Tool.modes.PSObject.Properties) {
-                    $modeKey = $mProp.Name
-                    $mode = $mProp.Value
-                    $tParams = if ($mode.template_parameters) { $mode.template_parameters } else { $Tool.template_parameters }
-                    $FullCmdTemplate = "$SafePath $(Get-CommandTemplate -RawParams $mode.parameters -TemplateParams $tParams)"
-                    
-                    $Key = "$($ToolName)_$($modeKey)"
-                    $CommandMap[$Key] = [pscustomobject]@{
-                        ToolName    = $ToolName
-                        Mode        = $modeKey
-                        FullCommand = $FullCmdTemplate
-                        Category    = $Tool.category
-                        Path        = $ResolvedPath
-                    }
-                }
-            } else {
-                $FullCmdTemplate = "$SafePath $(Get-CommandTemplate -RawParams $Tool.parameters -TemplateParams $Tool.template_parameters)"
-                $Key = "$($ToolName)_default"
-                $CommandMap[$Key] = [pscustomobject]@{
-                    ToolName    = $ToolName
-                    Mode        = "default"
-                    FullCommand = $FullCmdTemplate
-                    Category    = $Tool.category
-                    Path        = $ResolvedPath
-                }
-            }
+        foreach ($ext in $Tool.format) {
+            $fmt = $ext.ToLower().Trim(); if (-not $fmt.StartsWith(".")) { $fmt = ".$fmt" }
+            if ($Tool.category -eq "video") { [void]$videoExts.Add($fmt) } else { [void]$imageExts.Add($fmt) }
         }
     }
-    return $CommandMap
+    return @{ image = $imageExts | Sort-Object; video = $videoExts | Sort-Object }
 }
 
-# --- 6. 测试块：自动遍历所有扩展名并输出 Map ---
+# --- 6. 测试演示 ---
 if ($MyInvocation.InvocationName -ne '.') {
-    Write-Host "`n======================================================================" -ForegroundColor Cyan
-    Write-Host "  ⚙️  Map 数据完整导出模式 (支持自动路径解析)" -ForegroundColor White
-    Write-Host "======================================================================" -ForegroundColor Cyan
+    if (-not (Load-ToolConfig)) { exit }
 
-    $allExts = Get-SupportedExtensions
+    $userParams = Invoke-ParameterInteraction -Type "all" -UseGpu $true -Silent $false
+    $commandMap = Get-CommandMap -UserParamsMap $userParams
     
-    if ($allExts.Count -eq 0) {
-        Write-Host "未发现任何支持的格式，请检查 tools.json。" -ForegroundColor Red
-    } else {
-        foreach ($ext in $allExts) {
-            $map = Get-CommandMap -Format $ext
-            Write-Host "`n[ 格式: $ext ] (可用工具: $($map.Count))" -ForegroundColor Yellow -Style Bold
-            Write-Host "----------------------------------------------------" -ForegroundColor Gray
+    $MockIn = "C:\Test\Input.png"
+    $MockOut = "C:\Test\Output.avif"
 
-            foreach ($key in $map.Keys) {
-                $cmdObj = $map[$key]
-                Write-Host "  ID: " -NoNewline
-                Write-Host $key -ForegroundColor Cyan
-                Write-Host "  解析路径: " -NoNewline
-                Write-Host $cmdObj.Path -ForegroundColor DarkCyan
-                
-                # 模拟并行替换
-                $mockIn = "input$ext"
-                $mockOut = "output.avif"
-                if ($cmdObj.Category -eq "video") { $mockOut = "output.mp4" }
-                
-                $readyToRun = $cmdObj.FullCommand.Replace('$IN$', "`"$mockIn`"").Replace('$OUT$', "`"$mockOut`"")
-                
-                Write-Host "  模板: " -NoNewline
-                Write-Host $cmdObj.FullCommand -ForegroundColor DarkGray
-                Write-Host "  示例: " -NoNewline
-                Write-Host $readyToRun -ForegroundColor Green
-            }
+    Write-Host "`n--- 命令预览 ---" -ForegroundColor Cyan
+    foreach ($key in $commandMap.Keys) {
+        Write-Host "格式组 [$key]:" -ForegroundColor Yellow
+        foreach ($t in $commandMap[$key]) {
+            $finalArgs = $t.ArgsArray | ForEach-Object { $_.Replace('$IN$', "`"$MockIn`"").Replace('$OUT$', "`"$MockOut`"") }
+            Write-Host "  > [$($t.ToolName)] : $($t.SafePath) $($finalArgs -join ' ')" -ForegroundColor White
         }
     }
-    Write-Host "`n======================================================================" -ForegroundColor Cyan
 }

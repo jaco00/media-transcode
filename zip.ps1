@@ -33,6 +33,7 @@ if (Test-Path $configFile) {
 }
 
 . "$PSScriptRoot\helpers.ps1"
+. "$PSScriptRoot\tools-cfg.ps1"
 
 # 记录开始时间
 $startTime = Get-Date
