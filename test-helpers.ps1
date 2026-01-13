@@ -1,31 +1,30 @@
 ﻿# ===============================
 # 1. 导入 helper（主 Runspace）
 # ===============================
-. "$PSScriptRoot\helpers.ps1"
 
-# 检查 PowerShell 是否安装，特别是 pwsh
+# 检查是否在 pwsh 中运行，如果不是则用 pwsh 重新运行
 $requiredVersion = [version]"7.0.0"
-$pwshPath = Get-Command pwsh -ErrorAction SilentlyContinue
+$isPwsh = $PSVersionTable.PSVersion.Major -ge 7 -and $PSVersionTable.PSEdition -eq "Core"
 
-if (-not $pwshPath) {
-    Write-Host "未找到 PowerShell 7 (pwsh)。请安装 PowerShell 7 或更高版本，并运行 pwsh。"
-    Write-Host "安装 PowerShell 7 请使用以下命令："
-    Write-Host "winget install --id Microsoft.Powershell --source winget"
-    exit 1  # 退出脚本
+if (-not $isPwsh) {
+    $pwshPath = Get-Command pwsh -ErrorAction SilentlyContinue
+    if (-not $pwshPath) {
+        Write-Host "未找到 PowerShell 7 (pwsh)。请安装 PowerShell 7 或更高版本。" -ForegroundColor Red
+        Write-Host "安装 PowerShell 7 请使用以下命令：" -ForegroundColor Yellow
+        Write-Host "winget install --id Microsoft.Powershell --source winget"
+        exit 1
+    }
+
+    # 提示用户
+    Write-Host "检测到当前不在 PowerShell 7 (pwsh) 中运行，正在切换到 pwsh..." -ForegroundColor Yellow
+    Write-Host "路径: $($pwshPath.Source)" -ForegroundColor Cyan
+
+    # 用 pwsh 重新运行当前脚本
+    & $pwshPath -File $MyInvocation.MyCommand.Path
+    exit $LASTEXITCODE
 }
 
-# 获取当前 pwsh 的版本
-$currentVersionString = & $pwshPath --version
-
-# 提取 PowerShell 版本号并去掉前缀 "PowerShell "
-$currentVersion = [version]($currentVersionString -replace 'PowerShell ', '')
-
-if ($currentVersion -lt $requiredVersion) {
-    Write-Host "当前 PowerShell 版本为 $currentVersion。此脚本需要 PowerShell 7.0 或更高版本。"
-    Write-Host "请运行以下命令以安装 PowerShell 7 或更高版本："
-    Write-Host "winget install --id Microsoft.Powershell --source winget"
-    exit 1  # 退出脚本
-}
+. "$PSScriptRoot\helpers.ps1"
 
 
 $index = 0
@@ -36,6 +35,9 @@ $index = 0
 function Process-OneFile {
     param($file)
 
+    # 记录开始时间
+    $startTime = Get-Date
+
     # 真实场景这里跑 ffmpeg
     Start-Sleep -Milliseconds (Get-Random -Min 100 -Max 500)
 
@@ -43,6 +45,7 @@ function Process-OneFile {
         File     = $file.Name
         SrcBytes = $file.SrcSize
         NewBytes = $file.NewSize
+        StartTime = $startTime
     }
 }
 
@@ -80,12 +83,16 @@ foreach ($file in $files) {
 
     $r = Process-OneFile $file
 
+    # 计算耗时
+    $elapsed = ((Get-Date) - $r.StartTime).TotalSeconds
+
     Write-CompressionStatus `
         -File $r.File `
         -SrcBytes $r.SrcBytes `
         -NewBytes $r.NewBytes `
         -Index $index `
-        -Total $total
+        -Total $total `
+        -ElapsedSeconds $elapsed
 }
 
 
@@ -103,16 +110,19 @@ ForEach-Object -Parallel {
     # 只做事，不输出
     Process-OneFile $_
 
-} -ThrottleLimit 3 |
-ForEach-Object {
+} -ThrottleLimit 3 | ForEach-Object {
 
     # 主 Runspace：顺序输出
     $index++
+
+    # 计算耗时
+    $elapsed = ((Get-Date) - $_.StartTime).TotalSeconds
 
     Write-CompressionStatus `
         -File $_.File `
         -SrcBytes $_.SrcBytes `
         -NewBytes $_.NewBytes `
         -Index $index `
-        -Total $total
+        -Total $total `
+        -ElapsedSeconds $elapsed
 }

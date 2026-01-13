@@ -27,7 +27,8 @@ function Write-CompressionStatus {
         [double]$SrcBytes,
         [double]$NewBytes,
         [int]$Index,
-        [int]$Total
+        [int]$Total,
+        [double]$ElapsedSeconds = 0
     )
 
     # 计算压缩率（小于100表示变小，大于100表示变大）
@@ -72,13 +73,19 @@ function Write-CompressionStatus {
     if ($percent -le 100) {
         $percentDisplay = "[{0,6}]" -f $percentStr
         Write-Host $percentDisplay -ForegroundColor Green -NoNewline
-        Write-Host " $srcStr → $newStr " -NoNewline
-        Write-Host " | $File" -ForegroundColor White
+        if ($ElapsedSeconds -gt 0) {
+            $elapsedStr = "[{0:N2}s]" -f $ElapsedSeconds
+            Write-Host " $elapsedStr" -NoNewline -ForegroundColor DarkYellow
+        }
+        Write-Host " $srcStr → $newStr | $File" -ForegroundColor White
     } else {
         $percentDisplay = "[{0,6}]" -f $percentStr
         Write-Host $percentDisplay -ForegroundColor Red -NoNewline
-        Write-Host " $srcStr → $newStr " -NoNewline
-        Write-Host " | $File" -ForegroundColor White
+        if ($ElapsedSeconds -gt 0) {
+            $elapsedStr = "[{0:N2}s]" -f $ElapsedSeconds
+            Write-Host " $elapsedStr" -NoNewline -ForegroundColor DarkYellow
+        }
+        Write-Host " $srcStr → $newStr | $File" -ForegroundColor White
     }
 }
 

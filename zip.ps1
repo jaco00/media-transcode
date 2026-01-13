@@ -34,8 +34,8 @@ if (Test-Path $configFile) {
 
 . "$PSScriptRoot\helpers.ps1"
 
-
-
+# 记录开始时间
+$startTime = Get-Date
 
 # ---------- 硬件检测 ----------
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
@@ -348,9 +348,12 @@ Write-Host "继续批量处理..." -ForegroundColor Green
 # ---------- 保留原来的 ScriptBlock（用于并行模式）----------
 function Process-Image {
     param($file, $config)
-        
+
     if ($null -eq $file) { return } # 安全检查
-    
+
+    # 记录开始时间
+    $startTime = Get-Date
+
     $src = $file.FullName
     $rootPath = $config.InputRoot
     if ($null -eq $rootPath) { $rootPath = $InputRoot } # fallback for sequential
@@ -487,6 +490,7 @@ function Process-Image {
             File     = $src
             SrcBytes = $actualOldSize
             NewBytes = 0  # 返回失败时的 NewBytes 设为 0
+            StartTime = $startTime
         }
     }
     finally {
@@ -500,6 +504,7 @@ function Process-Image {
         File     = $src
         SrcBytes = $actualOldSize
         NewBytes = $newSize
+        StartTime = $startTime
     }
 }
 
@@ -564,12 +569,16 @@ if ($files.Count -gt 0) {
             # 主 Runspace：顺序输出
             $index++
 
+            # 计算耗时
+            $elapsed = ((Get-Date) - $_.StartTime).TotalSeconds
+
             Write-CompressionStatus `
                 -File $_.File `
                 -SrcBytes $_.SrcBytes `
                 -NewBytes $_.NewBytes `
                 -Index $index `
-                -Total $totalCount
+                -Total $totalCount `
+                -ElapsedSeconds $elapsed
 
             # 统计
             $script:imageSrcBytes += $_.SrcBytes
@@ -743,6 +752,7 @@ if ($videoFiles.Count -gt 0) {
 
 
 Write-Host ""
+Write-Host "✅ 全部完成" -ForegroundColor Yellow
 Write-Host "====================== 处理完成统计 ======================" -ForegroundColor Yellow
 
 if ($files.Count -gt 0) {
@@ -774,5 +784,11 @@ if ($totalSrcBytes -gt 0) {
     Write-Host "💾 总计节省: $totalSavedStr ($(Format-Size $totalSrcBytes) → $(Format-Size $totalNewBytes), $totalPercent%)" -ForegroundColor Green
 }
 
-Write-Host "==========================================================" -ForegroundColor Yellow
-Write-Host "全部完成 ✅ 可随时中断 / 重跑" -ForegroundColor Yellow
+# 计算运行时间
+$endTime = Get-Date
+$elapsed = ($endTime - $startTime).TotalMinutes
+$elapsedStr = "{0:N2}" -f $elapsed
+
+Write-Host "⏱️ 耗时: $elapsedStr 分钟" -ForegroundColor Yellow
+
+
