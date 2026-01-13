@@ -17,6 +17,12 @@ param(
     [string]$CQ = "22"                   # GPU 视频质量 (CQ)
 )
 
+enum MediaType {
+    Image = 0
+    Video = 1
+    All = 2
+}
+
 # 读取配置文件
 $configFile = Join-Path $PSScriptRoot "config.json"
 if (Test-Path $configFile) {
@@ -50,9 +56,17 @@ else {
     Write-Host "[硬件] 未发现 NVIDIA 显卡，使用 CPU 模式 (libx265)。" -ForegroundColor Yellow
 }
 # ---------- 配置 ----------
-$imageExtensions = @(".jpg", ".jpeg", ".png", ".heic", ".heif")
-$videoExtensions = @(".mp4", ".mov", ".wmv", ".avi", ".mkv")
+#$imageExtensions = @(".jpg", ".jpeg", ".png", ".heic", ".heif")
+#$videoExtensions = @(".mp4", ".mov", ".wmv", ".avi", ".mkv")
 
+$Supported = Get-SupportedExtensions
+
+# 3. 直接替换你原来的静态数组
+# 以前：$videoExtensions = @(".mp4", ".mov", ".wmv", ".avi", ".mkv")
+$videoExtensions = $Supported.video
+$imageExtensions = $Supported.image
+Write-Host "当前支持的视频后缀: $($videoExtensions -join ', ')" -ForegroundColor Magenta
+Write-Host "当前支持的图片后缀: $($imageExtensions -join ', ')" -ForegroundColor Green
 
 
 $FFmpegExe = Resolve-ToolExe "ffmpeg.exe"
@@ -103,9 +117,17 @@ $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $
 
 # 处理类型选择
 $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
-if ([string]::IsNullOrWhiteSpace($InputProcessType)) { $ProcessType = 0 }
-elseif ($InputProcessType -match '^[012]$') { $ProcessType = [int]$InputProcessType }
-else { $ProcessType = 0 }
+
+# 验证输入并转换为枚举类型
+if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
+    $CurrentMode = [MediaType]::Image # 默认值
+} else {
+    # PowerShell 会自动将匹配的数字字符串转换为对应的枚举成员
+    [MediaType]$CurrentMode = [int]$InputProcessType
+}
+
+# 转换为字符串用于后续调用
+$processTypeStr = $CurrentMode.ToString().ToLower()
 
 # 4. 询问压制参数
 if ($true) {
@@ -146,6 +168,12 @@ if ($true) {
         $ShowDetails = $InputShowDetails -match '^[Yy]$'
     }
 }
+$userParams = Invoke-ParameterInteraction -Type $processTypeStr -UseGpu $useGpu -Silent $false
+if ($null -eq $userParams -or $userParams.Count -eq 0) {
+    Write-Error "加载工具配置失败"
+    exit 1
+}
+$commandMap = Get-CommandMap -UserParamsMap $userParams
 
 
 # **重要提示:**
@@ -221,23 +249,23 @@ foreach ($file in $rawFiles) {
         continue
     }
 
-    # B. 被标记手动跳过的 (符合当前 ProcessType 范围才统计)
+    # B. 被标记手动跳过的 (符合当前 CurrentMode 范围才统计)
     if ($isExplicitSkip) {
-        if (($ProcessType -in 0, 2 -and $isImage) -or ($ProcessType -in 1, 2 -and $isVideo)) {
+        if (($CurrentMode -in [MediaType]::Image, [MediaType]::All -and $isImage) -or ($CurrentMode -in [MediaType]::Video, [MediaType]::All -and $isVideo)) {
             $skipCount++
         }
         continue
     }
 
     # C. 正常分类到待处理列表
-    if ($ProcessType -in 0, 2 -and $isImage) {
+    if ($CurrentMode -in [MediaType]::Image, [MediaType]::All -and $isImage) {
         if ($SkipExisting) {
             $checkPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".avif")
             if ((Test-Path $checkPath) -and (Get-Item $checkPath).Length -gt 0) { continue }
         }
         $files += $file
     }
-    elseif ($ProcessType -in 1, 2 -and $isVideo) {
+    elseif ($CurrentMode -in [MediaType]::Video, [MediaType]::All -and $isVideo) {
         $videoPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".h265.mp4")
         $tmpPath = $videoPath + ".tmp"
 
@@ -655,6 +683,25 @@ if ($videoFiles.Count -gt 0) {
         Write-Host "$progress 正在处理视频: [$rel]" -ForegroundColor Cyan
     
         try {
+            if ($useGpu) {
+                $cmdKey = $file.Extension.ToLower()+"_gpu"
+            }else{
+                $cmdKey = $file.Extension.ToLower()+"_cpu"
+            }
+            Write-Host "  命令键: $cmdKey" -ForegroundColor Green
+            if ($commandMap.ContainsKey($cmdKey)) {
+              Write-Host "  扩展名 $cmdKey :" -ForegroundColor Green
+              foreach ($t in $commandMap[$cmdKey]) {
+                  $finalArgs = $t.ArgsArray | ForEach-Object { $_.Replace('$IN$', "`"$src`"").Replace('$OUT$', "`"$tempOut`"") }
+                  Write-Host "    > [$($t.ToolName)] : $($t.SafePath) $($finalArgs -join ' ')" -ForegroundColor White
+              }
+            }
+
+
+
+
+
+            
             # 2. 转换 (FFmpeg)
             $ffmpegArgs = @("-y", "-hide_banner", "-i", $src)
             $ffmpegArgs += @("-c:v", $Codec)
