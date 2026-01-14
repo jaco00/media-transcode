@@ -396,6 +396,76 @@ foreach ($task in $taskList) {
 }
 Write-Host "----------------------------------------" -ForegroundColor Gray
 
+$stats = @{
+    Image = @{ SrcBytes = 0; NewBytes = 0; Success = 0; Failed = 0 }
+    Video = @{ SrcBytes = 0; NewBytes = 0; Success = 0; Failed = 0 }
+}
+
+$totalTasks = $taskList.Count
+for ($i = 0; $i -lt $totalTasks; $i++) {
+    $currentTask = $taskList[$i]
+    
+    # 调用处理函数
+    $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $false -LogMutex $null
+
+    # 获取任务类型 (Image 或 Video)
+    $type = $res.Type
+    
+    if ($res.Success) {
+        # 成功统计
+        $stats[$type].SrcBytes += $res.SrcBytes
+        $stats[$type].NewBytes += $res.NewBytes
+        $stats[$type].Success++
+        
+        # 调用输出函数显示进度 (假设已定义 Write-CompressionStatus)
+        Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index ($i + 1) -Total $totalTasks
+    } else {
+        # 失败统计
+        $stats[$type].Failed++
+        # 保持在控制台有明显的失败提示
+        Write-Host "✖ 彻底失败 ($($i+1)/$totalTasks): $($res.File)" -ForegroundColor Red
+    }
+}
+
+# ====================== 处理完成统计 ======================
+Write-Host "`n====================== 处理完成统计 ======================" -ForegroundColor Yellow
+
+# 1. 图片处理汇总
+$imgStats = $stats["Image"]
+$imgTotal = $imgStats.Success + $imgStats.Failed
+if ($imgTotal -gt 0) {
+    Write-Host "📸 图片处理: 成功 $($imgStats.Success) 个, 失败 $($imgStats.Failed) 个" -ForegroundColor Cyan
+    if ($imgStats.Success -gt 0) {
+        $imgSaved = $imgStats.SrcBytes - $imgStats.NewBytes
+        $imgSavedStr = Format-Size $imgSaved
+        Write-Host "   原大小: $(Format-Size $imgStats.SrcBytes) → 转换后: $(Format-Size $imgStats.NewBytes) | 节省: $imgSavedStr" -ForegroundColor Green
+    }
+}
+
+# 2. 视频处理汇总
+$vidStats = $stats["Video"]
+$vidTotal = $vidStats.Success + $vidStats.Failed
+if ($vidTotal -gt 0) {
+    Write-Host "🎬 视频处理: 成功 $($vidStats.Success) 个, 失败 $($vidStats.Failed) 个" -ForegroundColor Cyan
+    if ($vidStats.Success -gt 0) {
+        $vidSaved = $vidStats.SrcBytes - $vidStats.NewBytes
+        $vidSavedStr = Format-Size $vidSaved
+        Write-Host "   原大小: $(Format-Size $vidStats.SrcBytes) → 转换后: $(Format-Size $vidStats.NewBytes) | 节省: $vidSavedStr" -ForegroundColor Green
+    }
+}
+
+# 3. 总计汇总
+$totalSrcBytes = $imgStats.SrcBytes + $vidStats.SrcBytes
+$totalNewBytes = $imgStats.NewBytes + $vidStats.NewBytes
+
+if ($totalSrcBytes -gt 0) {
+    $totalSaved = $totalSrcBytes - $totalNewBytes
+    $totalSavedStr = Format-Size $totalSaved
+    $totalPercent = [math]::Round(($totalNewBytes / $totalSrcBytes) * 100, 1)
+    
+    Write-Host "`n💾 总计节省: $totalSavedStr ($(Format-Size $totalSrcBytes) → $(Format-Size $totalNewBytes), $totalPercent%)" -ForegroundColor Green
+}
+
 exit
 
 
@@ -881,3 +951,145 @@ $elapsedStr = "{0:N2}" -f $elapsed
 Write-Host "⏱️ 耗时: $elapsedStr 分钟" -ForegroundColor Yellow
 
 
+function Invoke-ProcessTask {
+    <#
+    .SYNOPSIS
+        通用任务处理函数，支持多工具方案回退、即时日志记录和计时。
+    
+    .PARAMETER Task
+        由 Convert-FilesToTasks 生成的任务对象，包含 Src, Cmds, TempOut, TargetOut, Type 等属性。
+    
+    .PARAMETER ShowDetails
+        是否在控制台输出工具的原始回显。
+    
+    .PARAMETER LogMutex
+        (可选) 用于并发环境下的日志互斥锁。
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [PSCustomObject]$Task,
+
+        [Parameter()]
+        [bool]$ShowDetails = $false,
+
+        [Parameter()]
+        $LogMutex = $null
+    )
+
+    if ($null -eq $Task) { return $null }
+
+    # 1. 初始化基础变量
+    $startTime = Get-Date
+    $src = $Task.Src
+    $rel = $Task.RelativePath
+    $tempOut = $Task.TempOut
+    $finalOut = $Task.TargetOut
+    $actualOldSize = $Task.OldSize
+    $rootPath = Split-Path $src -Parent
+
+    # 初始化返回对象的默认值，确保所有分支结构绝对一致
+    # 新增 Type 字段，标识任务类型（如图片或视频）
+    $resultTemplate = [ordered]@{
+        File         = $src
+        Type         = $Task.Type
+        SrcBytes     = $actualOldSize
+        NewBytes     = 0
+        StartTime    = $startTime
+        Success      = $false
+        ToolUsed     = ""
+        ErrorMessage = ""
+    }
+
+    try {
+        # 安全检查：如果没有可用命令
+        if (-not $Task.Cmds -or $Task.Cmds.Count -eq 0) {
+            $resultTemplate.ErrorMessage = "任务 [$rel] 配置异常: 没有关联任何有效的工具命令。"
+            throw $resultTemplate.ErrorMessage
+        }
+
+        # 2. 依次尝试备选方案 (成功即停止)
+        $totalCmds = $Task.Cmds.Count
+        for ($idx = 0; $idx -lt $totalCmds; $idx++) {
+            $cmdObj = $Task.Cmds[$idx]
+            $toolLabel = if ($totalCmds -gt 1) { "[$($cmdObj.ToolName)] (方案 $($idx+1)/$totalCmds)" } else { "[$($cmdObj.ToolName)]" }
+            $output = ""
+
+            try {
+                # 执行并捕获所有输出
+                $output = & $cmdObj.Path @($cmdObj.Args) 2>&1
+
+                if ($ShowDetails) {
+                    Write-Host "  CMD $toolLabel: $($cmdObj.DisplayCmd)" -ForegroundColor Yellow
+                    Write-Host ($output -join "`n") -ForegroundColor Yellow
+                }
+
+                # 校验执行结果
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $tempOut)) {
+                    
+                    # --- [成功路径] ---
+                    Move-Item $tempOut $finalOut -Force
+                    
+                    # 自动备份归档
+                    if (-not [string]::IsNullOrWhiteSpace($Task.BackupPath)) {
+                        if (-not (Test-Path $Task.BackupDir)) {
+                            New-Item -ItemType Directory -Force -Path $Task.BackupDir | Out-Null
+                        }
+                        Move-Item $src $Task.BackupPath -Force
+                    }
+
+                    # 更新并返回成功对象
+                    $resultTemplate.NewBytes = (Get-Item $finalOut).Length
+                    $resultTemplate.Success  = $true
+                    $resultTemplate.ToolUsed = $cmdObj.ToolName
+                    return [pscustomobject]$resultTemplate
+                } else {
+                    # 拼接命令和输出抛出异常
+                    throw "命令: $($cmdObj.DisplayCmd)`n退出码: $LASTEXITCODE`n终端输出: $($output -join "`n")"
+                }
+            }
+            catch {
+                # --- [即时记录失败日志] ---
+                $logContent = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] 失败: $src`n错误: $($_.Exception.Message)`n" + ("-" * 60) + "`n"
+                
+                $logFile = Join-Path $rootPath "err-$(Get-Date -Format 'yyyy-MM-dd').log"
+
+                # 如果所有方案都失败了，额外增加一条汇总标记
+                if ($idx -eq ($totalCmds - 1)) {
+                    $logContent += "[最终失败] 无法处理此文件: $src`n" + ("=" * 60) + "`n"
+                }
+
+                # 互斥锁处理
+                if ($null -ne $LogMutex) {
+                    try {
+                        $null = $LogMutex.WaitOne()
+                        Add-Content $logFile "`n$logContent" -ErrorAction SilentlyContinue
+                    } finally {
+                        $LogMutex.ReleaseMutex()
+                    }
+                } else {
+                    Add-Content $logFile "`n$logContent" -ErrorAction SilentlyContinue
+                }
+
+                # 判断是否重试
+                if ($idx -lt ($totalCmds - 1)) {
+                    Write-Host "  ⚠ $toolLabel 失败，已记录日志，重试下一个方案..." -ForegroundColor Yellow
+                    if (Test-Path $tempOut) { Remove-Item $tempOut -Force }
+                } else {
+                    throw "所有工具方案均已失败。详情见日志。"
+                }
+            }
+        }
+    }
+    catch {
+        # --- [最终失败路径] ---
+        if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
+        Write-Host "✖ 任务彻底失败: $rel" -ForegroundColor Red
+        
+        $resultTemplate.ErrorMessage = $_.Exception.Message
+        $resultTemplate.Success      = $false
+        return [pscustomobject]$resultTemplate
+    }
+    finally {
+        if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
+    }
+}
