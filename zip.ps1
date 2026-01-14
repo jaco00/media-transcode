@@ -689,12 +689,28 @@ if ($videoFiles.Count -gt 0) {
                 $cmdKey = $file.Extension.ToLower()+"_cpu"
             }
             Write-Host "  命令键: $cmdKey" -ForegroundColor Green
-            if ($commandMap.ContainsKey($cmdKey)) {
-              Write-Host "  扩展名 $cmdKey :" -ForegroundColor Green
-              foreach ($t in $commandMap[$cmdKey]) {
-                  $finalArgs = $t.ArgsArray | ForEach-Object { $_.Replace('$IN$', "`"$src`"").Replace('$OUT$', "`"$tempOut`"") }
-                  Write-Host "    > [$($t.ToolName)] : $($t.SafePath) $($finalArgs -join ' ')" -ForegroundColor White
-              }
+            $tools = $commandMap[$cmdKey]
+            if ($null -eq $tools -or $tools.Count -eq 0) {
+                throw "错误: 配置中虽然存在键名 [$cmdKey]，但没有关联任何有效的工具命令。"
+            }
+            $tool = $tools[0]
+            $finalArgs = $tool.ArgsArray | ForEach-Object { $_.Replace('$IN$', $src).Replace('$OUT$', $tempOut) }
+            if ($ShowDetails) {
+                $displayCmd = "$($tool.SafePath) $($finalArgs -join ' ')"
+                Write-Host "CMD ($($tool.ToolName)): $displayCmd" -ForegroundColor Yellow
+            }
+            # 调用 FFmpeg
+
+            
+            & $tool.Path @finalArgs
+                
+            if ($LASTEXITCODE -ne 0) {
+                throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
+            }
+
+            # 转换成功后重命名
+            if (Test-Path $tempOut) {
+                 Move-Item $tempOut $finalOut -Force
             }
 
 
@@ -702,64 +718,64 @@ if ($videoFiles.Count -gt 0) {
 
 
             
-            # 2. 转换 (FFmpeg)
-            $ffmpegArgs = @("-y", "-hide_banner", "-i", $src)
-            $ffmpegArgs += @("-c:v", $Codec)
+            # # # 2. 转换 (FFmpeg)
+            # $ffmpegArgs = @("-y", "-hide_banner", "-i", $src)
+            # $ffmpegArgs += @("-c:v", $Codec)
                 
-            if ($useGpu) {
-                $ffmpegArgs += @("-cq", $CQ)
-                $ffmpegArgs += @("-preset", "p4")
-            }
-            else {
-                $ffmpegArgs += @("-crf", $CRF)
-                $ffmpegArgs += @("-preset", "medium")
-            }
+            # if ($useGpu) {
+            #     $ffmpegArgs += @("-cq", $CQ)
+            #     $ffmpegArgs += @("-preset", "p4")
+            # }
+            # else {
+            #     $ffmpegArgs += @("-crf", $CRF)
+            #     $ffmpegArgs += @("-preset", "medium")
+            # }
 
-            $ffmpegArgs += @("-c:a", "aac")
-            $ffmpegArgs += @("-movflags", "+faststart")
-            $ffmpegArgs += @("-pix_fmt", "yuv420p")
+            # $ffmpegArgs += @("-c:a", "aac")
+            # $ffmpegArgs += @("-movflags", "+faststart")
+            # $ffmpegArgs += @("-pix_fmt", "yuv420p")
 
-            # 参数必须在输出文件名之前
-            if ($ShowDetails) {
-                # 详细模式不加 loglevel warning
-            }
-            else {
-                # 增加 -stats 以在 warning 级别下依然显示进度条
-                $ffmpegArgs += @("-loglevel", "warning", "-stats")
+            # # 参数必须在输出文件名之前
+            # if ($ShowDetails) {
+            #     # 详细模式不加 loglevel warning
+            # }
+            # else {
+            #     # 增加 -stats 以在 warning 级别下依然显示进度条
+            #     $ffmpegArgs += @("-loglevel", "warning", "-stats")
                     
-                # 如果是 libx265 且为静默模式，抑制其内部 info 输出
-                if ($Codec -eq "libx265") {
-                    $ffmpegArgs += @("-x265-params", "log-level=error")
-                }
-            }
+            #     # 如果是 libx265 且为静默模式，抑制其内部 info 输出
+            #     if ($Codec -eq "libx265") {
+            #         $ffmpegArgs += @("-x265-params", "log-level=error")
+            #     }
+            # }
 
-            # 增加 -f mp4 参数，因为输出文件以后缀 .tmp 结尾，ffmpeg 无法自动判断格式
-            $ffmpegArgs += @("-f", "mp4", $tempOut)
+            # # 增加 -f mp4 参数，因为输出文件以后缀 .tmp 结尾，ffmpeg 无法自动判断格式
+            # $ffmpegArgs += @("-f", "mp4", $tempOut)
                 
-            if ($ShowDetails) {
-                $cmd = "$FFmpegExe $($ffmpegArgs -join ' ')"
-                Write-Host "CMD: $cmd" -ForegroundColor Yellow
-            }
+            # if ($ShowDetails) {
+            #     $cmd = "$FFmpegExe $($ffmpegArgs -join ' ')"
+            #     Write-Host "CMD: $cmd" -ForegroundColor Yellow
+            # }
                 
-            # Dry-Run 模式：仅输出命令
-            if ($Mode -eq 9) {
-                Write-Host "[DRY-RUN] 处理视频: $rel" -ForegroundColor Cyan
-                # ...
-                continue
-            }
-            else {
-                # 调用 FFmpeg
-                & $FFmpegExe @ffmpegArgs
+            # # Dry-Run 模式：仅输出命令
+            # if ($Mode -eq 9) {
+            #     Write-Host "[DRY-RUN] 处理视频: $rel" -ForegroundColor Cyan
+            #     # ...
+            #     continue
+            # }
+            # else {
+            #     # 调用 FFmpeg
+            #     & $FFmpegExe @ffmpegArgs
                 
-                if ($LASTEXITCODE -ne 0) {
-                    throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
-                }
+            #     if ($LASTEXITCODE -ne 0) {
+            #         throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
+            #     }
 
-                # 转换成功后重命名
-                if (Test-Path $tempOut) {
-                    Move-Item $tempOut $finalOut -Force
-                }
-            }
+            #     # 转换成功后重命名
+            #     if (Test-Path $tempOut) {
+            #         Move-Item $tempOut $finalOut -Force
+            #     }
+            # }
             
             # 3. 显示压缩率
             $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
