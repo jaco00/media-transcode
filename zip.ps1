@@ -17,11 +17,7 @@ param(
     [string]$CQ = "22"                   # GPU 视频质量 (CQ)
 )
 
-enum MediaType {
-    Image = 0
-    Video = 1
-    All = 2
-}
+
 
 # 读取配置文件
 $configFile = Join-Path $PSScriptRoot "config.json"
@@ -43,6 +39,8 @@ if (Test-Path $configFile) {
 
 # 记录开始时间
 $startTime = Get-Date
+
+
 
 # ---------- 硬件检测 ----------
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
@@ -168,12 +166,8 @@ if ($true) {
         $ShowDetails = $InputShowDetails -match '^[Yy]$'
     }
 }
-$userParams = Invoke-ParameterInteraction -Type $processTypeStr -UseGpu $useGpu -Silent $false
-if ($null -eq $userParams -or $userParams.Count -eq 0) {
-    Write-Error "加载工具配置失败"
-    exit 1
-}
-$commandMap = Get-CommandMap -UserParamsMap $userParams
+
+
 
 
 # **重要提示:**
@@ -353,6 +347,7 @@ Write-Host ""
 Write-Host "====================== 执行确认 ======================" -ForegroundColor Yellow
 
 
+
 do {
     # 使用 Read-Host 获取用户输入
     $response = Read-Host "输入 Y 继续处理，输入 N 退出脚本"
@@ -372,6 +367,36 @@ do {
 } while ($true)
 
 Write-Host "继续批量处理..." -ForegroundColor Green
+
+# $userParams = Invoke-ParameterInteraction -Type $processTypeStr -UseGpu $useGpu -Silent $false
+# if ($null -eq $userParams -or $userParams.Count -eq 0) {
+#     Write-Error "加载工具配置失败"
+#     exit 1
+# }
+# $commandMap = Get-CommandMap -UserParamsMap $userParams
+
+$taskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu
+
+# 打印测试结果
+foreach ($task in $taskList) {
+    Write-Host "----------------------------------------" -ForegroundColor Gray
+    Write-Host "源文件: $($task.Src)"
+    Write-Host "相对路径: $($task.RelativePath)"
+    Write-Host "目标文件: $($task.TargetOut)"
+    Write-Host "备份路径: $($task.BackupPath)"
+    Write-Host "命令键: $($task.CmdKey)"
+    
+    foreach ($cmd in $task.Cmds) {
+        Write-Host "`n  [工具: $($cmd.ToolName)]" -ForegroundColor Green
+        Write-Host "  执行路径 (Path): $($cmd.Path)"
+        Write-Host "  参数数组 (Args): $($cmd.Args -join ' | ')"
+        Write-Host "  显示命令 (DisplayCmd):" -ForegroundColor Yellow
+        Write-Host "  $($cmd.DisplayCmd)"
+    }
+}
+Write-Host "----------------------------------------" -ForegroundColor Gray
+
+exit
 
 
 # ---------- 保留原来的 ScriptBlock（用于并行模式）----------

@@ -4,6 +4,12 @@
 # --- 脚本作用域变量 ---
 $script:ConfigJson = $null
 
+enum MediaType {
+    Image = 0
+    Video = 1
+    All = 2
+}
+
 # --- 1. 内部函数：加载配置 ---
 function Load-ToolConfig {
     $ConfigName = "tools.json"
@@ -91,18 +97,20 @@ function Resolve-ToolExe {
 # --- 3. 交互逻辑：参数确认与修改 ---
 function Invoke-ParameterInteraction {
     param(
-        [ValidateSet("image", "video", "all")]
-        [string]$Type = "all",
+        [Parameter(Mandatory = $false)]
+        [MediaType]$Type = [MediaType]::All,  # 使用枚举类型
         [bool]$UseGpu = $true,
         [bool]$Silent = $false
     )
 
     if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @{} } }
 
+    $typeFilter = $Type.ToString().ToLower()
+
     $ToolList = @() # 预扫描符合条件的工具
     foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
         $Tool = $script:ConfigJson.tools.$ToolName
-        if ($Type -ne "all" -and $Tool.category -ne $Type) { continue }
+        if ($typeFilter -ne "all" -and $Tool.category -ne $typeFilter) { continue }
         
         if ($Tool.category -eq "video" -and $Tool.modes) {
             $targetMode = if ($UseGpu) { "gpu" } else { "cpu" }
@@ -268,6 +276,135 @@ function Get-SupportedExtensions {
     return @{ image = $imageExts | Sort-Object; video = $videoExts | Sort-Object }
 }
 
+# 将文件列表转换为任务对象
+function Convert-FilesToTasks {
+    param(
+        [Parameter(Mandatory)]
+        [array]$files,           # FileInfo 对象数组
+
+        [Parameter(Mandatory)]
+        [string]$InputRoot,
+
+        [Parameter(Mandatory = $false)]
+        [string]$BackupRoot = $null,
+
+        [Parameter(Mandatory = $true)]
+        [MediaType]$Type,        # 外部传入的 MediaType 枚举: Image, Video, All
+
+        [Parameter(Mandatory = $false)]
+        [bool]$UseGpu = $false   # 明确指定是否使用 GPU
+    )
+    
+    if ($null -eq $script:ConfigJson) {
+        if (-not (Load-ToolConfig)) {
+            Write-Host "`n[错误] 无法加载工具配置文件 (config.json)。" -ForegroundColor Red
+            Write-Host "请检查文件是否存在或 JSON 格式是否正确。`n" -ForegroundColor Red
+            return $null  # 终止当前函数并返回空，而不是直接关闭窗口
+        }
+    }
+    
+    $userParams = Invoke-ParameterInteraction -Type $Type -UseGpu $UseGpu -Silent $false
+    $commandMap = Get-CommandMap -UserParamsMap $userParams
+    if ($null -eq $commandMap -or $commandMap.Count -eq 0) {
+        Write-Host "没有加载到可用的格式配置！" -ForegroundColor Red
+        return @()
+    } else {
+        $keys = $commandMap.Keys -join ', '
+        Write-Host "已经加载到可用的的格式配置: " -NoNewline -ForegroundColor Gray
+        Write-Host "[$keys]" -ForegroundColor Green
+    }
+
+
+    $supported = Get-SupportedExtensions
+    $tasks = @()
+
+    foreach ($file in $files) {
+        $src = $file.FullName
+        $rel = $src.Substring($InputRoot.Length).TrimStart('\')
+        $dir = Split-Path $rel -Parent
+        $name = $file.Name
+        $oldSize = $file.Length
+        
+        # Bug 修复 1: 获取真实的后缀名（带点的，如 .jpg）并转为小写
+        $ext = $file.Extension.ToLower()
+        $fileBaseName = [IO.Path]::GetFileNameWithoutExtension($name)
+
+        # 1. 确定媒体类型
+        $type = if ($supported.video -contains $ext) { 
+            [MediaType]::Video 
+        } elseif ($supported.image -contains $ext) { 
+            [MediaType]::Image 
+        } else { 
+            continue # 如果后缀不在配置内，跳过
+        }
+
+        # Bug 修复 2: 必须先定义 $targetName，后续 Join-Path 才能引用
+        $targetName = switch ($type) {
+            ([MediaType]::Image) { "$fileBaseName.avif" }
+            ([MediaType]::Video) { "$fileBaseName.h265.mp4" }
+            default { "$fileBaseName.avif" }
+        }
+
+        $targetOut = Join-Path $file.Directory.FullName $targetName
+        $tempOut = "$targetOut.tmp"
+
+        # 2. 备份路径处理
+        $backupDir = $null
+        $backup = $null
+        if (-not [string]::IsNullOrWhiteSpace($BackupRoot)) {
+            $backupDir = Join-Path $BackupRoot $dir
+            $backup = Join-Path $backupDir $name
+        }
+
+        # 3. 确定命令键 (CmdKey)
+        $cmdKey = switch ($type) {
+            ([MediaType]::Video) {
+                # 确保 $useGpu 在当前作用域可用
+                if ($UseGpu) { "$ext" + "_gpu" } else { "$ext" + "_cpu" }
+            }
+            ([MediaType]::Image) { $ext }
+            default { $ext }
+        }
+
+        # 4. 构建任务所需的命令结构体数组
+        $readyCmds = @()
+        if ($commandMap.ContainsKey($cmdKey)) {
+            $tools = $commandMap[$cmdKey]
+            
+            foreach ($tool in $tools) {
+                $finalArgs = $tool.ArgsArray | ForEach-Object { 
+                    $_.Replace('$IN$', $src).Replace('$OUT$', $tempOut) 
+                }
+
+                $readyCmds += [pscustomobject]@{
+                    ToolName   = $tool.ToolName
+                    Path       = $tool.Path
+                    Args       = $finalArgs
+                    DisplayCmd = "$($tool.SafePath) $($finalArgs -join ' ')"
+                }
+            }
+        }
+
+        # 5. 生成任务对象
+        $tasks += [pscustomobject]@{
+            SourceFile   = $file
+            Src          = $src
+            RelativePath = $rel
+            TargetOut    = $targetOut
+            TempOut      = $tempOut
+            BackupDir    = $backupDir
+            BackupPath   = $backup
+            OldSize      = $oldSize
+            CmdKey       = $cmdKey
+            Cmds         = $readyCmds
+            Type         = $type
+        }
+    }
+
+    return $tasks
+}
+
+
 # --- 6. 测试演示 ---
 if ($MyInvocation.InvocationName -ne '.') {
     if (-not (Load-ToolConfig)) { exit }
@@ -278,7 +415,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $videoExtensions = $Supported.video
 
     # 获取用户交互参数
-    $userParams = Invoke-ParameterInteraction -Type "all" -UseGpu $true -Silent $false
+    $userParams = Invoke-ParameterInteraction -Type ([MediaType]::All) -UseGpu $true -Silent $false
     $commandMap = Get-CommandMap -UserParamsMap $userParams
     
     $MockIn = "C:\Test\Input_File"
