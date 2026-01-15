@@ -95,7 +95,7 @@ function Resolve-ToolExe {
 
 
 # --- 3. 交互逻辑：参数确认与修改 ---
-function Invoke-ParameterInteraction {
+function Invoke-ParameterInteraction2 {
     param(
         [Parameter(Mandatory = $false)]
         [MediaType]$Type = [MediaType]::All,  # 使用枚举类型
@@ -135,9 +135,8 @@ function Invoke-ParameterInteraction {
     }
 
     # --- 逻辑 B: 非静默模式 (展示所有 -> 询问确认 -> 可选修改) ---
-    Write-Host "`n===============================================" -ForegroundColor Gray
-    Write-Host "   🚀 待执行工具及默认参数预览" -ForegroundColor Cyan
-    Write-Host "===============================================" -ForegroundColor Gray
+    Write-Host "`n  TOOLCHAIN PREVIEW" -ForegroundColor Cyan
+    Write-Host ("  " + ("─" * 46)) -ForegroundColor DarkGray
 
     foreach ($item in $ToolList) {
         $icon = if ($item.Category -eq "video") { "🎬" } else { "📸" }
@@ -184,6 +183,141 @@ function Invoke-ParameterInteraction {
         }
     }
 
+    return $FinalParamsMap
+}
+
+function Invoke-ParameterInteraction {
+    param(
+        [Parameter(Mandatory = $false)]
+        [MediaType]$Type = [MediaType]::All,
+        [bool]$UseGpu = $true,
+        [bool]$Silent = $false
+    )
+
+    # 加载配置检测
+    if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @{} } }
+
+    $typeFilter = $Type.ToString().ToLower()
+    $ToolList = @() 
+
+    # --- 1. 数据预处理：提取完整工具元数据 ---
+    foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
+        $Tool = $script:ConfigJson.tools.$ToolName
+        if ($typeFilter -ne "all" -and $Tool.category -ne $typeFilter) { continue }
+        
+        # 预先处理指令数组：将 [["-q", "80"], ["$IN$"]] 转为 "-q 80 $IN$"
+        $cmdPreview = ""
+        if ($Tool.parameters) {
+            $cmdPreview = ($Tool.parameters | ForEach-Object { $_ -join ' ' }) -join ' '
+        }
+
+        # 视频工具特殊模式处理 (GPU/CPU)
+        if ($Tool.category -eq "video" -and $Tool.modes) {
+            $targetMode = if ($UseGpu) { "gpu" } else { "cpu" }
+            if ($Tool.modes.$targetMode) {
+                $tParams = if ($Tool.modes.$targetMode.template_parameters) { $Tool.modes.$targetMode.template_parameters } else { $Tool.template_parameters }
+                # 如果模式中有独立的指令定义则覆盖
+                if ($Tool.modes.$targetMode.parameters) {
+                    $cmdPreview = ($Tool.modes.$targetMode.parameters | ForEach-Object { $_ -join ' ' }) -join ' '
+                }
+                $ToolList += [pscustomobject]@{
+                    Name     = $ToolName
+                    Category = $Tool.category
+                    Formats  = ($Tool.format -join ', ')
+                    RawCmd   = $cmdPreview
+                    Mode     = $targetMode
+                    Params   = $tParams
+                }
+            }
+        } else {
+            $ToolList += [pscustomobject]@{
+                Name     = $ToolName
+                Category = $Tool.category
+                Formats  = ($Tool.format -join ', ')
+                RawCmd   = $cmdPreview
+                Mode     = "default"
+                Params   = $Tool.template_parameters
+            }
+        }
+    }
+
+    $FinalParamsMap = @{}
+
+    # --- 逻辑 A: 静默模式 ---
+    if ($Silent) {
+        foreach ($item in $ToolList) {
+            if (-not $FinalParamsMap.ContainsKey($item.Name)) { $FinalParamsMap[$item.Name] = @{} }
+            $FinalParamsMap[$item.Name][$item.Mode] = Get-DefaultParams -Template $item.Params
+        }
+        return $FinalParamsMap
+    }
+
+    # --- 逻辑 B: 视觉增强预览区 ---
+    Write-Host "`n  TOOLS & ARGUMENTS PREVIEW" -ForegroundColor Cyan
+    Write-Host ("  " + ("─" * 52)) -ForegroundColor DarkGray
+
+    foreach ($item in $ToolList) {
+        $icon = if ($item.Category -eq "video") { "🎬" } else { "📸" }
+        $modeSuffix = if ($item.Mode -ne "default") { " ($($item.Mode))" } else { "" }
+        
+        # 打印工具标题
+        Write-Host " $icon [$($item.Name)$modeSuffix]" -ForegroundColor Yellow
+
+        # 对齐输出详细信息
+        Write-Host "$(Get-AlignedLabel "工具分类" 18)" -NoNewline -ForegroundColor Gray
+        Write-Host $item.Category -ForegroundColor White
+
+        if ($item.Formats) {
+            Write-Host "$(Get-AlignedLabel "支持格式" 18)" -NoNewline -ForegroundColor Gray
+            Write-Host $item.Formats -ForegroundColor White
+        }
+
+        # 模板变量
+        $defaults = Get-DefaultParams -Template $item.Params
+        if ($defaults.Count -gt 0) {
+            Write-Host "$(Get-AlignedLabel "变量配置" 18)" -NoNewline -ForegroundColor Gray
+            $pString = @()
+            foreach ($k in $defaults.Keys) { $pString += "$k=$($defaults[$k])" }
+            Write-Host ($pString -join " | ") -ForegroundColor Green
+        }
+
+        # 执行指令预览
+        if ($item.RawCmd) {
+            Write-Host "$(Get-AlignedLabel "执行指令" 18)" -NoNewline -ForegroundColor Gray
+            Write-Host $item.RawCmd -ForegroundColor DarkCyan
+        }
+        Write-Host "" # 工具间距
+    }
+
+    Write-Host ("  " + ("─" * 52)) -ForegroundColor DarkGray
+    
+    # --- 询问逻辑 ---
+    Write-Host "  确认使用以上默认值请按 [回车]，如需修改参数请输入 [y]: " -NoNewline -ForegroundColor Cyan
+    $needModify = Read-Host
+    $doModify = ($needModify -match "^[yY]$")
+
+    # --- 处理最终映射与交互修改 ---
+    foreach ($item in $ToolList) {
+        if (-not $FinalParamsMap.ContainsKey($item.Name)) { $FinalParamsMap[$item.Name] = @{} }
+        
+        $currentDefaults = Get-DefaultParams -Template $item.Params
+        
+        if ($doModify -and $currentDefaults.Count -gt 0) {
+            $label = if ($item.Mode -eq "default") { $item.Name } else { "$($item.Name) ($($item.Mode))" }
+            Write-Host "`n  ── 修改参数: [$label] ──" -ForegroundColor Yellow
+            $modified = @{}
+            foreach ($k in $currentDefaults.Keys) {
+                Write-Host "  > $k (当前: $($currentDefaults[$k])): " -NoNewline -ForegroundColor Gray
+                $userInput = Read-Host
+                $modified[$k] = if ([string]::IsNullOrWhiteSpace($userInput)) { $currentDefaults[$k] } else { $userInput }
+            }
+            $FinalParamsMap[$item.Name][$item.Mode] = $modified
+        } else {
+            $FinalParamsMap[$item.Name][$item.Mode] = $currentDefaults
+        }
+    }
+
+    Write-Host "`n  配置确认完毕，准备开始任务..." -ForegroundColor Green
     return $FinalParamsMap
 }
 
@@ -294,6 +428,7 @@ function Convert-FilesToTasks {
         [Parameter(Mandatory = $false)]
         [bool]$UseGpu = $false   # 明确指定是否使用 GPU
     )
+    $tasks = [System.Collections.Generic.List[object]]::new()
     if ($null -eq $files -or $files.Count -eq 0) { return @() }
     if ($null -eq $script:ConfigJson) {
         if (-not (Load-ToolConfig)) {
@@ -316,7 +451,7 @@ function Convert-FilesToTasks {
 
 
     $supported = Get-SupportedExtensions
-    $tasks = @()
+    
 
     foreach ($file in $files) {
         $src = $file.FullName
@@ -386,7 +521,7 @@ function Convert-FilesToTasks {
         }
 
         # 5. 生成任务对象
-        $tasks += [pscustomobject]@{
+        $tasks.Add([pscustomobject]@{
             SourceFile   = $file
             Src          = $src
             RelativePath = $rel
@@ -397,7 +532,7 @@ function Convert-FilesToTasks {
             OldSize      = $oldSize
             Cmds         = $readyCmds
             Type         = $type
-        }
+        })
     }
 
     return $tasks

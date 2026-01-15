@@ -23,7 +23,7 @@
       "priority": 99,
       "format": [".jpg", ".jpeg", ".png"],
       "template_parameters": {
-        "QUALITY": 75
+        "QUALITY": 85
       },
       "parameters": [
         ["-quality", "$QUALITY$"],
@@ -36,7 +36,7 @@
       "priority": 1,
       "format": [".heic", ".heif"],
       "template_parameters": {
-        "QUALITY": 75
+        "QUALITY": 85
       },
       "parameters": [
         ["-out", "avif"],
