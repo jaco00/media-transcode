@@ -205,7 +205,7 @@ $parallelEnabled = ($PSVersionTable.PSVersion.Major -ge 7) -and ($MaxThreads -gt
 
 # ---------- 扫描文件 ----------
 
-$files = @()      # 图片列表
+$imageFiles = @()      # 图片列表
 $videoFiles = @() # 视频列表
 $skipCount = 0    # 手动跳过计数
 
@@ -257,7 +257,7 @@ foreach ($file in $rawFiles) {
             $checkPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".avif")
             if ((Test-Path $checkPath) -and (Get-Item $checkPath).Length -gt 0) { continue }
         }
-        $files += $file
+        $imageFiles += $file
     }
     elseif ($CurrentMode -in [MediaType]::Video, [MediaType]::All -and $isVideo) {
         $videoPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".h265.mp4")
@@ -278,15 +278,16 @@ foreach ($file in $rawFiles) {
 
 Write-Host ""
 Write-Host "====================== 扫描统计 ======================" -ForegroundColor Yellow
-Write-Host " 📸 待处理图片: $($files.Count)" -ForegroundColor Green
+Write-Host " 📸 待处理图片: $($imageFiles.Count)" -ForegroundColor Green
 Write-Host " 🎬 待处理视频: $($videoFiles.Count)" -ForegroundColor Green
 Write-Host " ⏩ 手动已跳过: $skipCount" -ForegroundColor Gray
 Write-Host "======================================================" -ForegroundColor Yellow
 
-if ($files.Count -eq 0 -and $videoFiles.Count -eq 0) {
+if ($imageFiles.Count -eq 0 -and $videoFiles.Count -eq 0) {
     Write-Host "没有需要处理的文件。" -ForegroundColor Yellow
     exit 0
 }
+
 
 # --- 1. 获取要显示的扫描目录列表 ---
 if ($IncludeDirs.Count -gt 0) {
@@ -295,7 +296,7 @@ if ($IncludeDirs.Count -gt 0) {
 }
 else {
     # 未启用过滤器时，分析实际扫描到的文件，获取它们的一级父目录
-    $displayDirs = $files | ForEach-Object {
+    $displayDirs = $imageFiles | ForEach-Object {
         $relativePath = $_.FullName.Substring($InputRoot.Length + 1)
         $segments = $relativePath.Split([System.IO.Path]::DirectorySeparatorChar)
         
@@ -375,10 +376,11 @@ Write-Host "继续批量处理..." -ForegroundColor Green
 # }
 # $commandMap = Get-CommandMap -UserParamsMap $userParams
 
-$taskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu
+$videoTaskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu
+$imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) 
 
 # 打印测试结果
-foreach ($task in $taskList) {
+foreach ($task in $videoTaskList) {
     Write-Host "----------------------------------------" -ForegroundColor Gray
     Write-Host "源文件: $($task.Src)"
     Write-Host "相对路径: $($task.RelativePath)"
@@ -556,16 +558,50 @@ $stats = @{
     video = @{ SrcBytes = 0; NewBytes = 0; Success = 0; Failed = 0 }
 }
 
-$totalTasks = $taskList.Count
+if parallelEnabled{
+    $totalTasks = $videoTaskList.Count
+    $allTasks = @($videoTaskList) 
+}else{
+    $totalTasks = $videoTaskList.Count+$imageTaskList.Count
+    $allTasks = @($videoTaskList) + @($imageTaskList)
+}
+
+if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
+    # --- 并行模式 ---
+    $invokeFuncStr = ${function:Invoke-ProcessTask}.ToString()
+    $logMutex = New-Object System.Threading.Mutex($false, "FileLockMutex")
+
+    @($imageTaskList) | ForEach-Object -Parallel {
+        Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
+        Invoke-ProcessTask -Task $_ -ShowDetails $false -LogMutex ($using:logMutex)
+    } -ThrottleLimit $MaxThreads | ForEach-Object {
+        $res = $_
+        $counter++
+        $type = "image"
+
+        if ($res.Success) {
+            $stats[$type].SrcBytes += $res.SrcBytes
+            $stats[$type].NewBytes += $res.NewBytes
+            $stats[$type].Success++
+            $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
+            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $totalTasks -ElapsedSeconds $elapsed
+        } else {
+            $stats[$type].Failed++
+            Write-Host "✖ 处理失败 ($counter/$totalTasks): $($res.File)" -ForegroundColor Red
+        }
+    }
+    $logMutex.Dispose()
+}
+
 for ($i = 0; $i -lt $totalTasks; $i++) {
-    $currentTask = $taskList[$i]
+    $currentTask = $allTasks[$i]
     
     # 调用处理函数
     $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $false -LogMutex $null
 
     # 获取任务类型 (Image 或 Video)
     $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
-    
+    $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
     if ($res.Success) {
         # 成功统计
         $stats[$type].SrcBytes += $res.SrcBytes
@@ -573,12 +609,12 @@ for ($i = 0; $i -lt $totalTasks; $i++) {
         $stats[$type].Success++
         
         # 调用输出函数显示进度 (假设已定义 Write-CompressionStatus)
-        Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index ($i + 1) -Total $totalTasks
+        Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index ($i + 1) -Total $totalTasks -ElapsedSeconds $elapsed
     } else {
         # 失败统计
         $stats[$type].Failed++
         # 保持在控制台有明显的失败提示
-        Write-Host "✖ 彻底失败 ($($i+1)/$totalTasks): $($res.File)" -ForegroundColor Red
+        Write-Host "✖ 处理失败 ($($i+1)/$totalTasks): $($res.File)" -ForegroundColor Red
     }
 }
 
@@ -621,8 +657,14 @@ if ($totalSrcBytes -gt 0) {
     Write-Host "`n💾 总计节省: $totalSavedStr ($(Format-Size $totalSrcBytes) → $(Format-Size $totalNewBytes), $totalPercent%)" -ForegroundColor Green
 }
 
-exit
+$endTime = Get-Date
+$elapsed = ($endTime - $startTime).TotalMinutes
+$elapsedStr = "{0:N2}" -f $elapsed
 
+Write-Host "⏱️ 耗时: $elapsedStr 分钟" -ForegroundColor Yellow
+
+exit
+######################################################################################################################################################################
 
 # ---------- 保留原来的 ScriptBlock（用于并行模式）----------
 function Process-Image {
@@ -789,7 +831,7 @@ function Process-Image {
 
 
 # ---------- 执行处理 (统一入口) ----------
-if ($files.Count -gt 0) {
+if ($imageFiles.Count -gt 0) {
 
     $BackupEnabled = ($Mode -eq 0) # 只有 Mode 0 (备份模式) 启用备份
 
@@ -818,7 +860,7 @@ if ($files.Count -gt 0) {
     }
 
     if ($parallelEnabled) {
-        $totalCount = $files.Count
+        $totalCount = $imageFiles.Count
         $range = if ($totalCount -gt 0) { 0..($totalCount - 1) } else { @() }
 
         # 必须先转为字符串，因为 ForEach-Object -Parallel 不支持直接传递 $using:ScriptBlock
@@ -829,7 +871,7 @@ if ($files.Count -gt 0) {
         $range | ForEach-Object -Parallel {
             $index = $_
             $localConfig = $using:scriptConfig
-            $localFiles = $using:files
+            $localFiles = $using:imageFiles
             $file = $localFiles[$index]
             $total = $using:totalCount
 
@@ -873,8 +915,8 @@ if ($files.Count -gt 0) {
     else {
         # 顺序执行: 直接调用函数
         $i = 1
-        $totalCount = $files.Count
-        $files | ForEach-Object {
+        $totalCount = $imageFiles.Count
+        $imageFiles | ForEach-Object {
             $result = Process-Image $_ $scriptConfig
 
             # 统计
@@ -1069,7 +1111,7 @@ Write-Host ""
 Write-Host "✅ 全部完成" -ForegroundColor Yellow
 Write-Host "====================== 处理完成统计 ======================" -ForegroundColor Yellow
 
-if ($files.Count -gt 0) {
+if ($imageFiles.Count -gt 0) {
     $imageTotalCount = $imageSuccessCount + $imageFailedCount
     Write-Host "📸 图片处理: 成功 $imageSuccessCount 个, 失败 $imageFailedCount 个" -ForegroundColor Cyan
     if ($imageTotalCount -gt 0) {
