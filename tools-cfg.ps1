@@ -294,7 +294,7 @@ function Convert-FilesToTasks {
         [Parameter(Mandatory = $false)]
         [bool]$UseGpu = $false   # 明确指定是否使用 GPU
     )
-    
+    if ($null -eq $files -or $files.Count -eq 0) { return @() }
     if ($null -eq $script:ConfigJson) {
         if (-not (Load-ToolConfig)) {
             Write-Host "`n[错误] 无法加载工具配置文件 (config.json)。" -ForegroundColor Red
@@ -338,7 +338,7 @@ function Convert-FilesToTasks {
             continue # 如果后缀不在配置内，跳过
         }
 
-        # Bug 修复 2: 必须先定义 $targetName，后续 Join-Path 才能引用
+        
         $targetName = switch ($type) {
             ([MediaType]::Image) { "$fileBaseName.avif" }
             ([MediaType]::Video) { "$fileBaseName.h265.mp4" }
@@ -395,7 +395,6 @@ function Convert-FilesToTasks {
             BackupDir    = $backupDir
             BackupPath   = $backup
             OldSize      = $oldSize
-            CmdKey       = $cmdKey
             Cmds         = $readyCmds
             Type         = $type
         }

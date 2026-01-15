@@ -402,14 +402,15 @@ function Invoke-ProcessTask {
     param(
         [Parameter(Mandatory)] [PSCustomObject]$Task,
         [Parameter()] [bool]$ShowDetails = $false,
-        [Parameter()] $LogMutex = $null
+        [Parameter()] $LogMutex = $null,
+        [Parameter()] [string]$LogDir = ""
     )
 
     if ($null -eq $Task) { return $null }
 
     $startTime = Get-Date
     $src, $rel, $tempOut, $finalOut = $Task.Src, $Task.RelativePath, $Task.TempOut, $Task.TargetOut
-    $rootPath = Split-Path $src -Parent
+    
 
     $resultTemplate = [ordered]@{
         File         = $src
@@ -469,9 +470,12 @@ function Invoke-ProcessTask {
                 # 记录日志前清理当前方案产生的残余
                 if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
 
-                $logFile = Join-Path $rootPath "err-$(Get-Date -Format 'yyyy-MM-dd').log"
+                $logFile = Join-Path $LogDir "err-$(Get-Date -Format 'yyyy-MM-dd').log"
                 $errDetail = $_.Exception.Message
                 $logContent = "[$(Get-Date -Format 'HH:mm:ss')] 失败: $rel`n方案: $toolLabel`n错误: $errDetail`n$('-' * 60)"
+                Write-Host "`n--- [DEBUG 日志状态] ---" -ForegroundColor DarkGray
+                Write-Host "锁状态: $(if ($null -ne $LogMutex) { 'Mutex 已就绪' } else { '无锁 (Null)' })" -ForegroundColor DarkGray
+                Write-Host "日志路径: $logFile" -ForegroundColor DarkGray
 
                 if ($null -ne $LogMutex) {
                     $null = $LogMutex.WaitOne(); try { Add-Content $logFile "`n$logContent" } finally { $LogMutex.ReleaseMutex() }
@@ -518,7 +522,7 @@ if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
 
     @($imageTaskList) | ForEach-Object -Parallel {
         Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
-        Invoke-ProcessTask -Task $_ -ShowDetails $false -LogMutex ($using:logMutex)
+        Invoke-ProcessTask -Task $_ -ShowDetails $false -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
     } -ThrottleLimit $MaxThreads | ForEach-Object {
         $res = $_
         $counter++
@@ -542,7 +546,7 @@ for ($i = 0; $i -lt $totalTasks; $i++) {
     $currentTask = $allTasks[$i]
     
     # 调用处理函数
-    $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $false -LogMutex $null
+    $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $false -LogMutex $null -LogDir $InputRoot
 
     # 获取任务类型 (Image 或 Video)
     $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
