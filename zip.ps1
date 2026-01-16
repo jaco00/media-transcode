@@ -7,7 +7,8 @@ param(
     [string]$BackupDirName = "", # 备份目录
     [string[]]$IncludeDirs = @(),        # 只扫描 SourcePath 下的指定子目录（例如 '2023','2024'）。为空则扫描所有。
     [int]$MaxImageThreads = 8,                 # 并行处理的最大线程数。0 或 1 表示顺序处理。
-    [bool]$ShowDetails = $false            # 是否输出详细的执行命令 (CMD: ...)
+    [bool]$ShowDetails = $false,            # 是否输出详细的执行命令 (CMD: ...)
+    [string]$Cmd = "zip"                  # 新增参数：zip, img, video, all
 )
 # =============================================================
 # CPU 核心自动限制逻辑 (留出 4 核给系统) - 优化版
@@ -69,6 +70,11 @@ else {
     Write-Host "[硬件] 未发现 NVIDIA 显卡，使用 CPU 模式 (libx265)。" -ForegroundColor Yellow
 }
 
+$IsAutoMode = $Cmd -in @("img", "video", "all")
+if ($IsAutoMode) {
+    Write-Host "[Mode] 自动化执行模式: $Cmd (全扫描/默认确认)" -ForegroundColor Cyan
+}
+
 
 $Supported = Get-SupportedExtensions
 $videoExtensions = $Supported.video
@@ -87,8 +93,10 @@ if (-not $PSBoundParameters.ContainsKey('SourcePath')) {
 $SkipExisting = $true
 if (-not $PSBoundParameters.ContainsKey('BackupDirName')) { 
     Write-Host "对比模式 (转换 → 保留源)" -ForegroundColor Cyan
-    $SkipExistingResp = Read-Host "对比模式: 是否跳过已存在且非空的目标文件 (h265.mp4/avif)? (Y/N) [默认: Y]"
-    $SkipExisting = [string]::IsNullOrWhiteSpace($SkipExistingResp) -or $SkipExistingResp -match '^[Yy]'
+    if (-not $IsAutoMode) {
+        $SkipExistingResp = Read-Host "对比模式: 是否跳过已存在且非空的目标文件 (h265.mp4/avif)? (Y/N) [默认: Y]"
+        $SkipExisting = [string]::IsNullOrWhiteSpace($SkipExistingResp) -or $SkipExistingResp -match '^[Yy]'
+    }
 }
 else {
     Write-Host "备份模式 (转换 → 移动源到备份目录)" -ForegroundColor Cyan
@@ -112,15 +120,35 @@ $InputInclude = Read-Host "请输入扫描子目录 (逗号分隔，如 2023,202
 $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
 
 # 处理类型选择
-$InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
 
-# 验证输入并转换为枚举类型
-if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
-    $CurrentMode = [MediaType]::Image # 默认值
+if ($IsAutoMode) {
+    $IncludeDirs = @() # 自动化模式默认扫描所有
+    switch ($Cmd) {
+        "img"   { [MediaType]$CurrentMode = [MediaType]::Image }
+        "video" { [MediaType]$CurrentMode = [MediaType]::Video }
+        "all"   { [MediaType]$CurrentMode = [MediaType]::All }
+    }
 } else {
-    # PowerShell 会自动将匹配的数字字符串转换为对应的枚举成员
-    [MediaType]$CurrentMode = [int]$InputProcessType
+    $InputInclude = Read-Host "请输入扫描子目录 (逗号分隔；留空则全扫) [默认: 全部扫描]"
+    $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
+
+    $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
+    if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
+        $CurrentMode = [MediaType]::Image
+    } else {
+        [MediaType]$CurrentMode = [int]$InputProcessType
+    }
 }
+
+# $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
+
+# # 验证输入并转换为枚举类型
+# if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
+#     $CurrentMode = [MediaType]::Image # 默认值
+# } else {
+#     # PowerShell 会自动将匹配的数字字符串转换为对应的枚举成员
+#     [MediaType]$CurrentMode = [int]$InputProcessType
+# }
 
 # if ($CurrentMode -eq [MediaType]::Image -or $CurrentMode -eq [MediaType]::All) {
 #     $InputParallel = Read-Host "请输入图片处理的并行任务数量 (1-32) [默认: $MaxImageThreads]"
@@ -129,10 +157,11 @@ if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notma
 #     }
 # } 
 
-
-$InputShowDetails = Read-Host "是否输出详细的执行命令 (Y/N) [默认: $(if ($ShowDetails) {'Y'} else {'N'})]"
-if (![string]::IsNullOrWhiteSpace($InputShowDetails)) {
-    $ShowDetails = $InputShowDetails -match '^[Yy]$' 
+if (-not $IsAutoMode) {
+    $InputShowDetails = Read-Host "是否输出详细的执行命令 (Y/N) [默认: $(if ($ShowDetails) {'Y'} else {'N'})]"
+    if (![string]::IsNullOrWhiteSpace($InputShowDetails)) {
+        $ShowDetails = $InputShowDetails -match '^[Yy]$' 
+    }
 }
 
 $psMajor = $PSVersionTable.PSVersion.Major 
@@ -353,10 +382,34 @@ if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
     $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu
 }
 
-do {
-    $response = (Read-Host "输入 Y 继续处理，输入 N 退出").ToUpper()
-    if ($response -eq 'N') { Write-Error "脚本终止"; exit }
-} while ($response -ne 'Y')
+# do {
+#     $response = (Read-Host "输入 Y 继续处理，输入 N 退出").ToUpper()
+#     if ($response -eq 'N') { Write-Error "脚本终止"; exit }
+# } while ($response -ne 'Y')
+
+
+if ($IsAutoMode) {
+    # 自动化模式：显示扫描统计并倒计时
+    # Write-Host "`n[等待] 脚本将在 10 秒后自动开始执行，按任意键立即开始，Ctrl+C 退出..." -ForegroundColor Yellow
+    # for ($i = 10; $i -gt 0; $i--) {
+    #     Write-Host -NoNewline "$i.. "
+    #     if ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true); break }
+    #     Start-Sleep -Seconds 1
+    # }
+
+    $totalSeconds = 15
+    for ($i = 1; $i -le $totalSeconds; $i++) {
+        $remaining = $totalSeconds - $i
+        Write-Progress -Activity "任务即将在 10 秒后开始，(Ctrl+C 退出)" -Status "剩余 $remaining 秒" -PercentComplete (($i / $totalSeconds) * 100) -CurrentOperation "正在等待..."
+        Start-Sleep -Seconds 1
+    }
+} else {
+    # 交互模式：等待手动输入 Y 确认
+    do {
+        $response = (Read-Host "`n输入 Y 继续处理，输入 N 退出").ToUpper()
+        if ($response -eq 'N') { exit }
+    } while ($response -ne 'Y')
+}
 
 Write-Host "继续批量处理..." -ForegroundColor Green
 
