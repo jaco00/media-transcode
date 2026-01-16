@@ -114,10 +114,11 @@ else {
     Write-Host "📦 备份目录：$BackupRoot" -ForegroundColor Cyan
 }
 
-
 # 扫描子目录
-$InputInclude = Read-Host "请输入扫描子目录 (逗号分隔，如 2023,2024；留空则全扫) [默认: 全部扫描]"
-$IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
+if(!$IsAutoMode) {
+    $InputInclude = Read-Host "请输入扫描子目录 (逗号分隔，如 2023,2024；留空则全扫) [默认: 全部扫描]"
+    $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
+}
 
 # 处理类型选择
 
@@ -313,7 +314,7 @@ function Get-AlignedLabel {
 $configItems = [Ordered]@{
     "源目录"           = $InputRoot
     "备份目录"         = $BackupRoot
-    "覆盖已转换文件"   = if ($SkipExisting) { "已开启" } else { "已关闭" }
+    "跳过已转换文件"   = if ($SkipExisting) { "已开启" } else { "已关闭" }
     "扫描范围"         = if ($null -eq $IncludeDirs -or $IncludeDirs.Count -eq 0) { "所有" } else { $IncludeDirs -join ', ' }
     "执行模式"         = if ($parallelEnabled) { "并行模式 ($MaxImageThreads 线程)" } else { "单线程模式" }
     "输出级别"         = if ($ShowDetails) { "详细输出" } else { "静默模式" }
@@ -375,11 +376,11 @@ foreach ($key in $configItems.Keys) {
 $videoTaskList = [System.Collections.Generic.List[object]]::new()
 $imageTaskList = [System.Collections.Generic.List[object]]::new()
 if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
-    $videoTaskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu
+    $videoTaskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu -Silent $IsAutoMode
 }
 
 if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
-    $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu
+    $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu -Silent $IsAutoMode
 }
 
 # do {
@@ -397,12 +398,21 @@ if ($IsAutoMode) {
     #     Start-Sleep -Seconds 1
     # }
 
-    $totalSeconds = 15
-    for ($i = 1; $i -le $totalSeconds; $i++) {
-        $remaining = $totalSeconds - $i
-        Write-Progress -Activity "任务即将在 10 秒后开始，(Ctrl+C 退出)" -Status "剩余 $remaining 秒" -PercentComplete (($i / $totalSeconds) * 100) -CurrentOperation "正在等待..."
+    # $totalSeconds = 15
+    # for ($i = 1; $i -le $totalSeconds; $i++) {
+    #     $remaining = $totalSeconds - $i
+    #     Write-Progress -Activity "任务即将在 10 秒后开始，(Ctrl+C 退出)" -Status "剩余 $remaining 秒" -PercentComplete (($i / $totalSeconds) * 100) -CurrentOperation "正在等待..."
+    #     Start-Sleep -Seconds 1
+    # }
+    Write-Host "`n[等待] 脚本进入自动化倒计时 (按任意键立即开始，Ctrl+C 退出):" -ForegroundColor Yellow
+    $totalSeconds = 10
+    for ($i = $totalSeconds; $i -gt 0; $i--) {
+        # 使用 `r 实现行首覆盖，保持在同一行输出
+        Write-Host -NoNewline "`r>>> 任务将在 $i 秒后开始...   " 
+        if ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true); break }
         Start-Sleep -Seconds 1
     }
+    #Write-Host "`r   >>> 正在启动任务...               " -ForegroundColor Green
 } else {
     # 交互模式：等待手动输入 Y 确认
     do {

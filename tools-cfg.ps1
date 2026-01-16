@@ -426,7 +426,10 @@ function Convert-FilesToTasks {
         [MediaType]$Type,        # 外部传入的 MediaType 枚举: Image, Video, All
 
         [Parameter(Mandatory = $false)]
-        [bool]$UseGpu = $false   # 明确指定是否使用 GPU
+        [bool]$UseGpu = $false,   # 明确指定是否使用 GPU
+
+        [Parameter(Mandatory = $false)]
+        [bool]$Silent = $false   # 新增参数：是否静默处理（不输出转换预览）
     )
     $tasks = [System.Collections.Generic.List[object]]::new()
     if ($null -eq $files -or $files.Count -eq 0) { return @() }
@@ -438,7 +441,7 @@ function Convert-FilesToTasks {
         }
     }
     
-    $userParams = Invoke-ParameterInteraction -Type $Type -UseGpu $UseGpu -Silent $false
+    $userParams = Invoke-ParameterInteraction -Type $Type -UseGpu $UseGpu -Silent $Silent
     $commandMap = Get-CommandMap -UserParamsMap $userParams
     if ($null -eq $commandMap -or $commandMap.Count -eq 0) {
         Write-Host "没有加载到可用的格式配置！" -ForegroundColor Red
