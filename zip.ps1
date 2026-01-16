@@ -6,17 +6,50 @@ param(
     [string]$SourcePath = "",      # 源目录
     [string]$BackupDirName = "", # 备份目录
     [string[]]$IncludeDirs = @(),        # 只扫描 SourcePath 下的指定子目录（例如 '2023','2024'）。为空则扫描所有。
-    [int]$MaxThreads = 8,                 # 并行处理的最大线程数。0 或 1 表示顺序处理。
+    [int]$MaxImageThreads = 8,                 # 并行处理的最大线程数。0 或 1 表示顺序处理。
     [bool]$ShowDetails = $false            # 是否输出详细的执行命令 (CMD: ...)
 )
+# =============================================================
+# CPU 核心自动限制逻辑 (留出 4 核给系统) - 优化版
+# =============================================================
+try {
+    # 1. 获取系统总逻辑核心数
+    $totalCores = [Environment]::ProcessorCount
+
+    # 2. 计算应使用的核心数 (留出 4 个逻辑核心给系统/后台任务)
+    if ($totalCores -gt 4) {
+        $useCores = $totalCores - 4
+    } else {
+        $useCores = 1
+    }
+
+    # 3. 计算位掩码 (Bitmask)
+    # 采用位移操作生成连续的可用核心标志位。
+    # 例如：12核系统，$useCores=8，则生成二进制 11111111 (十进制 255)
+    $mask = [long]0
+    for ($i = 0; $i -lt $useCores; $i++) {
+        $mask = $mask -bor ([long]1 -shl $i)
+    }
+
+    # 4. 应用限制到当前进程及其子进程
+    # 注意：ProcessorAffinity 限制的是“逻辑核心”而非“物理核心”。
+    # 留出的 4 个核心通常会承载系统 I/O 驱动和内核调度任务。
+    $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+    $currentProcess.ProcessorAffinity = [IntPtr]$mask
+
+    # 打印提示信息
+    $hexMask = "{0:X}" -f $mask
+    Write-Host "[System] CPU 优化: 总逻辑核心 $totalCores, 已分配 $useCores 核 (掩码: 0x$hexMask)" -ForegroundColor Gray
+} catch {
+    Write-Host "[Warning] 自动核心限制失败: $($_.Exception.Message)" -ForegroundColor Yellow
+}
+
 
 # 读取配置文件
-$configFile = Join-Path $PSScriptRoot "config.json"
+$configFile = Join-Path $PSScriptRoot "tools.json"
 if (Test-Path $configFile) {
-    Write-Host "✅ 已加载配置文件: config.json" -ForegroundColor Green
     $configData = Get-Content $configFile | ConvertFrom-Json
-   
-    if ($null -ne $configData.MaxThreads) { [int]$MaxThreads = $configData.MaxThreads }
+    if ($null -ne $configData.MaxImageThreads) { [int]$MaxImageThreads = $configData.MaxImageThreads }
 
 }
 
@@ -50,13 +83,14 @@ if (-not $PSBoundParameters.ContainsKey('SourcePath')) {
 }
 
 # 2. 模式选择 (提前到此处，以便根据模式决定后续询问内容)
-$Mode = $null
-if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
-    $Mode = 1
+
+$SkipExisting = $true
+if (-not $PSBoundParameters.ContainsKey('BackupDirName')) { 
     Write-Host "对比模式 (转换 → 保留源)" -ForegroundColor Cyan
+    $SkipExistingResp = Read-Host "对比模式: 是否跳过已存在且非空的目标文件 (h265.mp4/avif)? (Y/N) [默认: Y]"
+    $SkipExisting = [string]::IsNullOrWhiteSpace($SkipExistingResp) -or $SkipExistingResp -match '^[Yy]'
 }
 else {
-    $Mode = 0
     Write-Host "备份模式 (转换 → 移动源到备份目录)" -ForegroundColor Cyan
    
     if ([System.IO.Path]::IsPathRooted($BackupDirName)) {
@@ -72,12 +106,6 @@ else {
     Write-Host "📦 备份目录：$BackupRoot" -ForegroundColor Cyan
 }
 
-# Add SkipExisting prompt
-$SkipExisting = $false
-if ($Mode -eq 1) {
-    $SkipExistingResp = Read-Host "共存模式: 是否跳过已存在且非空的目标文件 (h265.mp4/avif)? (Y/N) [默认: Y]"
-    $SkipExisting = [string]::IsNullOrWhiteSpace($SkipExistingResp) -or $SkipExistingResp -match '^[Yy]'
-}
 
 # 扫描子目录
 $InputInclude = Read-Host "请输入扫描子目录 (逗号分隔，如 2023,2024；留空则全扫) [默认: 全部扫描]"
@@ -93,6 +121,14 @@ if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notma
     # PowerShell 会自动将匹配的数字字符串转换为对应的枚举成员
     [MediaType]$CurrentMode = [int]$InputProcessType
 }
+
+# if ($CurrentMode -eq [MediaType]::Image -or $CurrentMode -eq [MediaType]::All) {
+#     $InputParallel = Read-Host "请输入图片处理的并行任务数量 (1-32) [默认: $MaxImageThreads]"
+#     if (![string]::IsNullOrWhiteSpace($InputParallel) -and $InputParallel -match '^\d+$') {
+#         $MaxImageThreads = [int]$InputParallel
+#     }
+# } 
+
 
 $InputShowDetails = Read-Host "是否输出详细的执行命令 (Y/N) [默认: $(if ($ShowDetails) {'Y'} else {'N'})]"
 if (![string]::IsNullOrWhiteSpace($InputShowDetails)) {
@@ -119,7 +155,7 @@ else {
 }
 
 # 检查 PowerShell 版本是否支持并行
-$parallelEnabled = ($PSVersionTable.PSVersion.Major -ge 7) -and ($MaxThreads -gt 1)
+$parallelEnabled = ($PSVersionTable.PSVersion.Major -ge 7) -and ($MaxImageThreads -gt 1)
 
 # ---------- 扫描文件 ----------
 $imageFiles = [System.Collections.Generic.List[object]]::new()
@@ -195,6 +231,7 @@ foreach ($file in $rawFiles) {
 }
 
 
+
 Write-Host "`n  TASK SUMMARY" -ForegroundColor Cyan
 Write-Host ("  " + ("─" * 46)) -ForegroundColor DarkGray
 
@@ -249,7 +286,7 @@ $configItems = [Ordered]@{
     "备份目录"         = $BackupRoot
     "覆盖已转换文件"   = if ($SkipExisting) { "已开启" } else { "已关闭" }
     "扫描范围"         = if ($null -eq $IncludeDirs -or $IncludeDirs.Count -eq 0) { "所有" } else { $IncludeDirs -join ', ' }
-    "执行模式"         = if ($parallelEnabled) { "并行模式 ($MaxThreads 线程)" } else { "单线程模式" }
+    "执行模式"         = if ($parallelEnabled) { "并行模式 ($MaxImageThreads 线程)" } else { "单线程模式" }
     "输出级别"         = if ($ShowDetails) { "详细输出" } else { "静默模式" }
 }
 
@@ -305,6 +342,7 @@ foreach ($key in $configItems.Keys) {
 
 # Write-Host "继续批量处理..." -ForegroundColor Green
 
+
 $videoTaskList = [System.Collections.Generic.List[object]]::new()
 $imageTaskList = [System.Collections.Generic.List[object]]::new()
 if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
@@ -312,7 +350,7 @@ if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
 }
 
 if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
-    $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image)
+    $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu
 }
 
 do {
@@ -393,7 +431,22 @@ function Invoke-ProcessTask {
                 if ($LASTEXITCODE -eq 0 -and (Test-Path $tempOut)) {
                     # 必须在 Move-Item 之前获取大小，因为移动后临时路径就消失了
                     $resultTemplate.NewBytes = (Get-Item $tempOut).Length 
-                    Move-Item $tempOut $finalOut -Force
+                    #Move-Item $tempOut $finalOut -Force
+
+                    Move-Item $tempOut $finalOut -Force -ErrorAction SilentlyContinue
+
+                    if (-not $?) {
+                        $parent = Split-Path $finalOut -Parent
+                        $leaf = Split-Path $finalOut -Leaf
+                        $timestamp = Get-Date -Format "yyyyMMdd_HHmmssfff"
+    
+                        $newName = "conflict_$timestamp`_$leaf"
+                        $newPath = Join-Path $parent $newName
+
+                        Move-Item $tempOut $newPath -Force
+                        Write-Host " [!] 目标被占用，已另存为: $newName" -ForegroundColor Yellow
+                    }
+
                     
                     if (-not [string]::IsNullOrWhiteSpace($Task.BackupPath)) {
                         if (-not (Test-Path $Task.BackupDir)) { New-Item $Task.BackupDir -ItemType Directory -Force | Out-Null }
@@ -414,9 +467,7 @@ function Invoke-ProcessTask {
                 $logFile = Join-Path $LogDir "err-$(Get-Date -Format 'yyyy-MM-dd').log"
                 $errDetail = $_.Exception.Message
                 $logContent = "[$(Get-Date -Format 'HH:mm:ss')] 失败: $rel`n方案: $toolLabel`n错误: $errDetail`n$('-' * 60)"
-                Write-Host "`n--- [DEBUG 日志状态] ---" -ForegroundColor DarkGray
-                Write-Host "锁状态: $(if ($null -ne $LogMutex) { 'Mutex 已就绪' } else { '无锁 (Null)' })" -ForegroundColor DarkGray
-                Write-Host "日志路径: $logFile" -ForegroundColor DarkGray
+                
 
                 if ($null -ne $LogMutex) {
                     $null = $LogMutex.WaitOne(); try { Add-Content $logFile "`n$logContent" } finally { $LogMutex.ReleaseMutex() }
@@ -453,7 +504,7 @@ if ($parallelEnabled){
     $allTasks = @($videoTaskList) 
 }else{
     $totalTasks = $videoTaskList.Count+$imageTaskList.Count
-    $allTasks = @($videoTaskList) + @($imageTaskList)
+    $allTasks = @($imageTaskList) + @($videoTaskList)
 }
 
 if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
@@ -464,7 +515,7 @@ if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
     @($imageTaskList) | ForEach-Object -Parallel {
         Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
         Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
-    } -ThrottleLimit $MaxThreads | ForEach-Object {
+    } -ThrottleLimit $MaxImageThreads | ForEach-Object {
         $res = $_
         $counter++
         $type = "image"
@@ -474,10 +525,10 @@ if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
             $stats[$type].NewBytes += $res.NewBytes
             $stats[$type].Success++
             $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
-            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $totalTasks -ElapsedSeconds $elapsed
+            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $imageTaskList.Count -ElapsedSeconds $elapsed
         } else {
             $stats[$type].Failed++
-            Write-Host "✖ 处理失败 ($counter/$totalTasks): $($res.File)" -ForegroundColor Red
+            Write-Host "✖ 处理失败 ($counter/$imageTaskList.Count): $($res.File)" -ForegroundColor Red
         }
     }
     $logMutex.Dispose()

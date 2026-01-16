@@ -1,5 +1,5 @@
 {
-  "defaultTool": "avifenc",
+  "MaxImageThreads": 6,
   "tools": {
     "avifenc": {
       "path": "",
@@ -7,7 +7,7 @@
       "priority": 1,
       "format": [".jpg", ".jpeg", ".png"],
       "template_parameters": {
-        "QUALITY": 80
+        "QUALITY": 85
       },
       "parameters": [
         ["--speed", "6"],
@@ -20,23 +20,25 @@
     "magick": {
       "path": "",
       "category": "image",
-      "priority": 99,
-      "format": [".jpg", ".jpeg", ".png"],
+      "priority": 2,
+      "format": [".jpg", ".jpeg", ".png", ".heic", ".heif"],
       "template_parameters": {
-        "QUALITY": 85
+        "QUALITY": 78
       },
       "parameters": [
+        ["-limit", "thread", "1"],
         ["-quality", "$QUALITY$"],
-        ["$IN$", "$OUT$"]
+        ["-define", "heic:chroma=444"],
+        ["$IN$", "avif:$OUT$"]
       ]
     },
     "nconvert": {
       "path": "",
       "category": "image",
-      "priority": 1,
+      "priority": 99,
       "format": [".heic", ".heif"],
       "template_parameters": {
-        "QUALITY": 85
+        "QUALITY": 82
       },
       "parameters": [
         ["-out", "avif"],

@@ -31,6 +31,7 @@ function Load-ToolConfig {
     try {
         $RawContent = Get-Content -LiteralPath $SelectedPath -Raw -Encoding UTF8
         $script:ConfigJson = $RawContent | ConvertFrom-Json
+        Write-Host "✅ 已加载配置文件: $SelectedPath" -ForegroundColor Green
         return $true
     } catch {
         Write-Error "解析 JSON 失败: $($_.Exception.Message)"
@@ -292,9 +293,9 @@ function Invoke-ParameterInteraction {
     Write-Host ("  " + ("─" * 52)) -ForegroundColor DarkGray
     
     # --- 询问逻辑 ---
-    Write-Host "  确认使用以上默认值请按 [回车]，如需修改参数请输入 [y]: " -NoNewline -ForegroundColor Cyan
-    $needModify = Read-Host
-    $doModify = ($needModify -match "^[yY]$")
+    Write-Host "确认使用以上默认值请按 [任意键] 继续，如需修改参数请输入 [M]: " -NoNewline -ForegroundColor Cyan
+    $userInput = Read-Host
+    $doModify = ($userInput -match "^[mM]$")
 
     # --- 处理最终映射与交互修改 ---
     foreach ($item in $ToolList) {
@@ -317,7 +318,6 @@ function Invoke-ParameterInteraction {
         }
     }
 
-    Write-Host "`n  配置确认完毕，准备开始任务..." -ForegroundColor Green
     return $FinalParamsMap
 }
 
