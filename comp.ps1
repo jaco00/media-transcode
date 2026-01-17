@@ -47,17 +47,17 @@ for ($i=0; $i -lt $total; $i++) {
 
     if ($Mode -eq "middle") {
         # 尝试从 container 获取总时长（兼容 MKV / MP4 / HEVC）
-        Write-Host "DEBUG: ffprobe path: '$ffprobe'" -ForegroundColor Yellow
-        Write-Host "DEBUG: file path: '$($file.FullName)'" -ForegroundColor Yellow
-        Write-Host "DEBUG: file exists: $(Test-Path $file.FullName)" -ForegroundColor Yellow
-        Write-Host "DEBUG: encoded path: '$encoded'" -ForegroundColor Yellow
-        Write-Host "DEBUG: encoded exists: $(Test-Path $encoded)" -ForegroundColor Yellow
+        # Write-Host "DEBUG: ffprobe path: '$ffprobe'" -ForegroundColor Yellow
+        # Write-Host "DEBUG: file path: '$($file.FullName)'" -ForegroundColor Yellow
+        # Write-Host "DEBUG: file exists: $(Test-Path $file.FullName)" -ForegroundColor Yellow
+        # Write-Host "DEBUG: encoded path: '$encoded'" -ForegroundColor Yellow
+        # Write-Host "DEBUG: encoded exists: $(Test-Path $encoded)" -ForegroundColor Yellow
 
         $durStr = & $ffprobe -v error -show_entries format=duration -of csv=p=0 $file.FullName
         $dur = 0
 
-        Write-Host "DEBUG: ffprobe output: '$durStr'" -ForegroundColor Yellow
-        Write-Host "DEBUG: ffprobe exit code: $LASTEXITCODE" -ForegroundColor Yellow
+        # Write-Host "DEBUG: ffprobe output: '$durStr'" -ForegroundColor Yellow
+        # Write-Host "DEBUG: ffprobe exit code: $LASTEXITCODE" -ForegroundColor Yellow
 
         if ([double]::TryParse($durStr, [ref]$dur)) {
             # dur 是视频总时长，计算中间开始位置

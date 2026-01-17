@@ -6,53 +6,64 @@ param(
     [string]$SourcePath = "",      # 源目录
     [string]$BackupDirName = "", # 备份目录
     [string[]]$IncludeDirs = @(),        # 只扫描 SourcePath 下的指定子目录（例如 '2023','2024'）。为空则扫描所有。
-    [int]$MaxImageThreads = 8,                 # 并行处理的最大线程数。0 或 1 表示顺序处理。
     [bool]$ShowDetails = $false,            # 是否输出详细的执行命令 (CMD: ...)
     [string]$Cmd = "zip"                  # 新增参数：zip, img, video, all
 )
+
 # =============================================================
-# CPU 核心自动限制逻辑 (留出 4 核给系统) - 优化版
+# CPU 核心自动限制与并行规模计算逻辑
 # =============================================================
+# 默认预留 2 个核心，防止系统卡死
+$ReservedCores = 2
+$configFile = Join-Path $PSScriptRoot "tools.json"
+
+if (Test-Path $configFile) {
+    try {
+        $configData = Get-Content $configFile -Raw | ConvertFrom-Json
+        if ($null -ne $configData.ReservedCores) { 
+            $ReservedCores = [int]$configData.ReservedCores 
+        }
+    } catch {
+        Write-Host "[Warning] 读取 tools.json 失败，使用默认预留核心: $ReservedCores" -ForegroundColor Yellow
+    }
+}
+
 try {
     # 1. 获取系统总逻辑核心数
     $totalCores = [Environment]::ProcessorCount
 
-    # 2. 计算应使用的核心数 (留出 4 个逻辑核心给系统/后台任务)
-    if ($totalCores -gt 4) {
-        $useCores = $totalCores - 4
+    # 2. 计算应使用的核心数 (并行执行时建议使用的线程数)
+    # 如果总核心大于预留核心，则使用剩余核心；否则强制设为 1
+    if ($totalCores -gt $ReservedCores) {
+        $useCores = $totalCores - $ReservedCores
     } else {
         $useCores = 1
     }
 
     # 3. 计算位掩码 (Bitmask)
-    # 采用位移操作生成连续的可用核心标志位。
-    # 例如：12核系统，$useCores=8，则生成二进制 11111111 (十进制 255)
+    # 限制当前进程（及生成的子进程如 ffmpeg/magick）仅在指定的 CPU 核心上运行
     $mask = [long]0
     for ($i = 0; $i -lt $useCores; $i++) {
         $mask = $mask -bor ([long]1 -shl $i)
     }
 
-    # 4. 应用限制到当前进程及其子进程
-    # 注意：ProcessorAffinity 限制的是“逻辑核心”而非“物理核心”。
-    # 留出的 4 个核心通常会承载系统 I/O 驱动和内核调度任务。
+    # 4. 应用亲和性限制到当前进程
     $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
     $currentProcess.ProcessorAffinity = [System.IntPtr]$mask
 
-    # 打印提示信息
+    # 打印优化信息
     $hexMask = "{0:X}" -f $mask
-    Write-Host "[System] CPU 优化: 总逻辑核心 $totalCores, 已分配 $useCores 核 (掩码: 0x$hexMask)" -ForegroundColor Gray
+    Write-Host "[System] CPU 优化控制:" -ForegroundColor Gray
+    Write-Host "  - 系统总核心: $totalCores" -ForegroundColor Gray
+    Write-Host "  - 用户预留值: $ReservedCores" -ForegroundColor Gray
+    Write-Host "  - 脚本可用核: $useCores (掩码: 0x$hexMask)" -ForegroundColor Cyan
 } catch {
-    Write-Host "[Warning] 自动核心限制失败: $($_.Exception.Message)" -ForegroundColor Yellow
+    $useCores = 1 # 失败时安全回退
+    Write-Host "[Warning] 自动核心限制失败，回退至单核模式: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
-
-# 读取配置文件
-$configFile = Join-Path $PSScriptRoot "tools.json"
-if (Test-Path $configFile) {
-    $configData = Get-Content $configFile | ConvertFrom-Json
-    if ($null -ne $configData.MaxImageThreads) { [int]$MaxImageThreads = $configData.MaxImageThreads }
-
-}
+# 将 $useCores 暴露给后续的并行处理逻辑（例如 ForEach-Object -Parallel -ThrottleLimit $useCores）
+$MaxThreads = $useCores
 
 . "$PSScriptRoot\helpers.ps1"
 . "$PSScriptRoot\tools-cfg.ps1"
@@ -185,7 +196,7 @@ else {
 }
 
 # 检查 PowerShell 版本是否支持并行
-$parallelEnabled = ($PSVersionTable.PSVersion.Major -ge 7) -and ($MaxImageThreads -gt 1)
+$parallelEnabled = ($PSVersionTable.PSVersion.Major -ge 7) -and ($MaxThreads -gt 1)
 
 # ---------- 扫描文件 ----------
 $imageFiles = [System.Collections.Generic.List[object]]::new()
@@ -316,7 +327,7 @@ $configItems = [Ordered]@{
     "备份目录"         = $BackupRoot
     "跳过已转换文件"   = if ($SkipExisting) { "已开启" } else { "已关闭" }
     "扫描范围"         = if ($null -eq $IncludeDirs -or $IncludeDirs.Count -eq 0) { "所有" } else { $IncludeDirs -join ', ' }
-    "执行模式"         = if ($parallelEnabled) { "并行模式 ($MaxImageThreads 线程)" } else { "单线程模式" }
+    "执行模式"         = if ($parallelEnabled) { "并行模式 ($MaxThreads 线程)" } else { "单线程模式" }
     "输出级别"         = if ($ShowDetails) { "详细输出" } else { "静默模式" }
 }
 
@@ -382,6 +393,30 @@ if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
 if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
     $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu -Silent $IsAutoMode
 }
+
+if ($parallelEnabled){
+    $totalTasks = $videoTaskList.Count
+    $allTasks = @($videoTaskList) 
+}else{
+    $totalTasks = $videoTaskList.Count+$imageTaskList.Count
+    $allTasks = @($imageTaskList) + @($videoTaskList)
+}
+
+$allRawTasks = $imageTaskList + $videoTaskList
+
+# 2. 根据 EnableParallel 属性进行分流
+$parallelTasks = [System.Collections.Generic.List[object]]::new()
+$serialTasks   = [System.Collections.Generic.List[object]]::new()
+
+foreach ($task in $allRawTasks) {
+    if ($task.EnableParallel -and $parallelEnabled) {
+        $parallelTasks.Add($task)
+    } else {
+        $serialTasks.Add($task)
+    }
+}
+Write-Host " 🚀 并行队列 (Parallel)  : $($parallelTasks.Count.ToString().PadLeft(8))" -ForegroundColor Green
+Write-Host " ⏳ 串行队列 (Sequential): $($serialTasks.Count.ToString().PadLeft(8))" -ForegroundColor Yellow
 
 # do {
 #     $response = (Read-Host "输入 Y 继续处理，输入 N 退出").ToUpper()
@@ -562,30 +597,28 @@ $stats = @{
     video = @{ SrcBytes = 0; NewBytes = 0; Success = 0; Failed = 0 }
 }
 
-if ($parallelEnabled){
-    $totalTasks = $videoTaskList.Count
-    $allTasks = @($videoTaskList) 
-}else{
-    $totalTasks = $videoTaskList.Count+$imageTaskList.Count
-    $allTasks = @($imageTaskList) + @($videoTaskList)
-}
 
-$allRawTasks = $imageTaskList + $videoTaskList
 
-# 2. 根据 EnableParallel 属性进行分流
-$parallelTasks = [System.Collections.Generic.List[object]]::new()
-$serialTasks   = [System.Collections.Generic.List[object]]::new()
+$counter = 0
 
-foreach ($task in $allRawTasks) {
-    if ($task.EnableParallel -and $parallelEnabled) {
-        $parallelTasks.Add($task)
+function Update-GlobalProgress {
+    param($Result)
+    $res = $Result
+    $script:counter++
+    $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
+    
+
+    if ($res.Success) {
+        $stats[$type].SrcBytes += $res.SrcBytes
+        $stats[$type].NewBytes += $res.NewBytes
+        $stats[$type].Success++
+        $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
+        Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $script:counter -Total $allRawTasks.Count -ElapsedSeconds $elapsed
     } else {
-        $serialTasks.Add($task)
+        $stats[$type].Failed++
+        Write-Host "✖ 处理失败 ($($script:counter)/$($allRawTasks.Count)): $($res.File)" -ForegroundColor Red
     }
 }
-Write-Host " 🚀 并行队列 (Parallel)  : $($parallelTasks.Count.ToString().PadLeft(8))" -ForegroundColor Green
-Write-Host " ⏳ 串行队列 (Sequential): $($serialTasks.Count.ToString().PadLeft(8))" -ForegroundColor Yellow
-
 
 if ($parallelEnabled -and @($parallelTasks).Count -gt 0) {
     # --- 并行模式 ---
@@ -595,49 +628,69 @@ if ($parallelEnabled -and @($parallelTasks).Count -gt 0) {
     @($parallelTasks) | ForEach-Object -Parallel {
         Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
         Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
-    } -ThrottleLimit $MaxImageThreads | ForEach-Object {
+    } -ThrottleLimit $MaxThreads | ForEach-Object {
         $res = $_
         $counter++
-        $type = "image"
+        $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
 
         if ($res.Success) {
             $stats[$type].SrcBytes += $res.SrcBytes
             $stats[$type].NewBytes += $res.NewBytes
             $stats[$type].Success++
             $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
-            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $imageTaskList.Count -ElapsedSeconds $elapsed
+            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $allRawTasks.Count -ElapsedSeconds $elapsed
         } else {
             $stats[$type].Failed++
-            Write-Host "✖ 处理失败 ($counter/$parallelTasks.Count): $($res.File)" -ForegroundColor Red
+            Write-Host "✖ 处理失败 ($counter/$allRawTasks.Count): $($res.File)" -ForegroundColor Red
         }
     }
     $logMutex.Dispose()
 }
 
-for ($i = 0; $i -lt $serialTasks.Count; $i++) {
-    $currentTask = $serialTasks[$i]
-    
-    # 调用处理函数
-    $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $ShowDetails -LogMutex $null -LogDir $InputRoot
-
-    # 获取任务类型 (Image 或 Video)
-    $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
-    $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
-    if ($res.Success) {
-        # 成功统计
-        $stats[$type].SrcBytes += $res.SrcBytes
-        $stats[$type].NewBytes += $res.NewBytes
-        $stats[$type].Success++
-        
-        # 调用输出函数显示进度 (假设已定义 Write-CompressionStatus)
-        Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index ($i + 1) -Total $serialTasks.Count -ElapsedSeconds $elapsed
-    } else {
-        # 失败统计
-        $stats[$type].Failed++
-        # 保持在控制台有明显的失败提示
-        Write-Host "✖ 处理失败 ($($i+1)/$totalTasks): $($res.File)" -ForegroundColor Red
+if ($serialTasks.Count -gt 0) {
+    @($serialTasks) | ForEach-Object {
+        $res = Invoke-ProcessTask -Task $_ -ShowDetails $ShowDetails -LogMutex $logMutex -LogDir $InputRoot
+        Update-GlobalProgress -Result $res
     }
+
+
+    # $invokeFuncStr = ${function:Invoke-ProcessTask}.ToString()
+    # $logMutex = New-Object System.Threading.Mutex($false, "FileLockMutex")
+
+    # @($serialTasks) | ForEach-Object -Parallel {
+    #     Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
+    #     Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
+    # } -ThrottleLimit 2 | ForEach-Object {
+    #      Update-GlobalProgress -Result $_
+    # }
+    # $logMutex.Dispose()
 }
+
+# for ($i = 0; $i -lt $serialTasks.Count; $i++) {
+#     $currentTask = $serialTasks[$i]
+    
+#     # 调用处理函数
+#     $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $ShowDetails -LogMutex $null -LogDir $InputRoot
+
+#     # 获取任务类型 (Image 或 Video)
+#     $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
+#     $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
+#     $counter++
+#     if ($res.Success) {
+#         # 成功统计
+#         $stats[$type].SrcBytes += $res.SrcBytes
+#         $stats[$type].NewBytes += $res.NewBytes
+#         $stats[$type].Success++
+        
+#         # 调用输出函数显示进度 (假设已定义 Write-CompressionStatus)
+#         Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $allRawTasks.Count -ElapsedSeconds $elapsed
+#     } else {
+#         # 失败统计
+#         $stats[$type].Failed++
+#         # 保持在控制台有明显的失败提示
+#         Write-Host "✖ 处理失败 ($counter/$allRawTasks.Count): $($res.File)" -ForegroundColor Red
+#     }
+# }
 
 # ====================== 处理完成统计 ======================
 Write-Host "`n====================== 处理完成统计 ======================" -ForegroundColor Yellow
