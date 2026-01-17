@@ -350,6 +350,7 @@ function Get-CommandMap {
         $ResolvedPath = if ($ExeNameForLookup -notmatch "[\\/]") { Resolve-ToolExe -ExeName $ExeNameForLookup } else { $ExeNameForLookup }
         $SafePath = if ($ResolvedPath -and $ResolvedPath.Contains(" ") -and -not $ResolvedPath.StartsWith('"')) { "`"$ResolvedPath`"" } else { $ResolvedPath }
         $Priority = if ($null -ne $Tool.priority) { [int]$Tool.priority } else { 99 }
+        $EnableParallel = if ($null -ne $Tool.enable_parallel) { [bool]$Tool.enable_parallel } else { $false }
 
         foreach ($ext in $Tool.format) {
             $extLower = $ext.ToLower().Trim()
@@ -375,13 +376,14 @@ function Get-CommandMap {
                 }
 
                 $MasterMap[$modeKey].Add([pscustomobject]@{
-                    ToolName    = $ToolName
-                    Mode        = $modeName
-                    ArgsArray   = $processedArgs.ToArray()
-                    Priority    = $Priority
-                    Path        = $ResolvedPath
-                    SafePath    = $SafePath
-                    Category    = $Tool.category
+                    ToolName       = $ToolName
+                    Mode           = $modeName
+                    ArgsArray      = $processedArgs.ToArray()
+                    Priority       = $Priority
+                    Path           = $ResolvedPath
+                    SafePath       = $SafePath
+                    Category       = $Tool.category
+                    EnableParallel = $EnableParallel
                 })
             }
         }
@@ -506,9 +508,12 @@ function Convert-FilesToTasks {
 
         # 4. 构建任务所需的命令结构体数组
         $readyCmds = @()
+        $taskEnableParallel = $false # 默认不开启
         if ($commandMap.ContainsKey($cmdKey)) {
             $tools = $commandMap[$cmdKey]
-            
+            if ($tools.Count -gt 0) {
+                $taskEnableParallel = $tools[0].EnableParallel
+            }
             foreach ($tool in $tools) {
                 $finalArgs = $tool.ArgsArray | ForEach-Object { 
                     $_.Replace('$IN$', $src).Replace('$OUT$', $tempOut) 
@@ -535,6 +540,7 @@ function Convert-FilesToTasks {
             OldSize      = $oldSize
             Cmds         = $readyCmds
             Type         = $type
+            EnableParallel = $taskEnableParallel
         })
     }
 

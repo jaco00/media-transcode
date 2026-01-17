@@ -36,7 +36,7 @@ try {
     # 注意：ProcessorAffinity 限制的是“逻辑核心”而非“物理核心”。
     # 留出的 4 个核心通常会承载系统 I/O 驱动和内核调度任务。
     $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
-    $currentProcess.ProcessorAffinity = [IntPtr]$mask
+    $currentProcess.ProcessorAffinity = [System.IntPtr]$mask
 
     # 打印提示信息
     $hexMask = "{0:X}" -f $mask
@@ -570,12 +570,29 @@ if ($parallelEnabled){
     $allTasks = @($imageTaskList) + @($videoTaskList)
 }
 
-if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
+$allRawTasks = $imageTaskList + $videoTaskList
+
+# 2. 根据 EnableParallel 属性进行分流
+$parallelTasks = [System.Collections.Generic.List[object]]::new()
+$serialTasks   = [System.Collections.Generic.List[object]]::new()
+
+foreach ($task in $allRawTasks) {
+    if ($task.EnableParallel -and $parallelEnabled) {
+        $parallelTasks.Add($task)
+    } else {
+        $serialTasks.Add($task)
+    }
+}
+Write-Host " 🚀 并行队列 (Parallel)  : $($parallelTasks.Count.ToString().PadLeft(8))" -ForegroundColor Green
+Write-Host " ⏳ 串行队列 (Sequential): $($serialTasks.Count.ToString().PadLeft(8))" -ForegroundColor Yellow
+
+
+if ($parallelEnabled -and @($parallelTasks).Count -gt 0) {
     # --- 并行模式 ---
     $invokeFuncStr = ${function:Invoke-ProcessTask}.ToString()
     $logMutex = New-Object System.Threading.Mutex($false, "FileLockMutex")
 
-    @($imageTaskList) | ForEach-Object -Parallel {
+    @($parallelTasks) | ForEach-Object -Parallel {
         Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
         Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
     } -ThrottleLimit $MaxImageThreads | ForEach-Object {
@@ -591,14 +608,14 @@ if ($parallelEnabled -and @($imageTaskList).Count -gt 0) {
             Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $imageTaskList.Count -ElapsedSeconds $elapsed
         } else {
             $stats[$type].Failed++
-            Write-Host "✖ 处理失败 ($counter/$imageTaskList.Count): $($res.File)" -ForegroundColor Red
+            Write-Host "✖ 处理失败 ($counter/$parallelTasks.Count): $($res.File)" -ForegroundColor Red
         }
     }
     $logMutex.Dispose()
 }
 
-for ($i = 0; $i -lt $totalTasks; $i++) {
-    $currentTask = $allTasks[$i]
+for ($i = 0; $i -lt $serialTasks.Count; $i++) {
+    $currentTask = $serialTasks[$i]
     
     # 调用处理函数
     $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $ShowDetails -LogMutex $null -LogDir $InputRoot
@@ -613,7 +630,7 @@ for ($i = 0; $i -lt $totalTasks; $i++) {
         $stats[$type].Success++
         
         # 调用输出函数显示进度 (假设已定义 Write-CompressionStatus)
-        Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index ($i + 1) -Total $totalTasks -ElapsedSeconds $elapsed
+        Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index ($i + 1) -Total $serialTasks.Count -ElapsedSeconds $elapsed
     } else {
         # 失败统计
         $stats[$type].Failed++

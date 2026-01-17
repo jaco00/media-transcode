@@ -1,9 +1,10 @@
 {
-  "MaxImageThreads": 6,
+  "MaxImageThreads": 10,
   "tools": {
     "avifenc": {
       "path": "",
       "category": "image",
+      "enable_parallel": true,
       "priority": 1,
       "format": [".jpg", ".jpeg", ".png"],
       "template_parameters": {
@@ -20,7 +21,8 @@
     "magick": {
       "path": "",
       "category": "image",
-      "priority": 2,
+      "enable_parallel": false,
+      "priority": 20,
       "format": [".jpg", ".jpeg", ".png", ".heic", ".heif"],
       "template_parameters": {
         "QUALITY": 78
@@ -35,7 +37,8 @@
     "nconvert": {
       "path": "",
       "category": "image",
-      "priority": 99,
+      "enable_parallel": false,
+      "priority": 9,
       "format": [".heic", ".heif"],
       "template_parameters": {
         "QUALITY": 82
