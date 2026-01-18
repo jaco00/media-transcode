@@ -141,8 +141,6 @@ if ($IsAutoMode) {
         "all"   { [MediaType]$CurrentMode = [MediaType]::All }
     }
 } else {
-    $InputInclude = Read-Host "请输入扫描子目录 (逗号分隔；留空则全扫) [默认: 全部扫描]"
-    $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
 
     $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
     if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
@@ -176,7 +174,6 @@ if (-not $IsAutoMode) {
     }
 }
 
-$psMajor = $PSVersionTable.PSVersion.Major 
 
 # 解析源目录路径 (支持绝对/相对路径与标准化)
 if ([System.IO.Path]::IsPathRooted($SourcePath)) {
@@ -383,32 +380,26 @@ foreach ($key in $configItems.Keys) {
 
 # Write-Host "继续批量处理..." -ForegroundColor Green
 
+$allFiles= $imageFiles + $videoFiles
+$allTasks = Convert-FilesToTasks -files $allFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type $CurrentMode -UseGpu $useGpu -Silent $IsAutoMode
 
-$videoTaskList = [System.Collections.Generic.List[object]]::new()
-$imageTaskList = [System.Collections.Generic.List[object]]::new()
-if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
-    $videoTaskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu -Silent $IsAutoMode
-}
 
-if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
-    $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu -Silent $IsAutoMode
-}
+# $videoTaskList = [System.Collections.Generic.List[object]]::new()
+# $imageTaskList = [System.Collections.Generic.List[object]]::new()
+# if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
+#     $videoTaskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu -Silent $IsAutoMode
+# }
 
-if ($parallelEnabled){
-    $totalTasks = $videoTaskList.Count
-    $allTasks = @($videoTaskList) 
-}else{
-    $totalTasks = $videoTaskList.Count+$imageTaskList.Count
-    $allTasks = @($imageTaskList) + @($videoTaskList)
-}
+# if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
+#     $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu -Silent $IsAutoMode
+# }
 
-$allRawTasks = $imageTaskList + $videoTaskList
 
 # 2. 根据 EnableParallel 属性进行分流
 $parallelTasks = [System.Collections.Generic.List[object]]::new()
 $serialTasks   = [System.Collections.Generic.List[object]]::new()
 
-foreach ($task in $allRawTasks) {
+foreach ($task in $allTasks) {
     if ($task.EnableParallel -and $parallelEnabled) {
         $parallelTasks.Add($task)
     } else {
@@ -504,6 +495,20 @@ function Invoke-ProcessTask {
         $resultTemplate.ErrorMessage = "任务 [$rel] 配置异常: 无有效工具命令。"
         return [pscustomobject]$resultTemplate
     }
+    $UpdateProgressUI = {
+        param($percent, $speed, $currentTimeStr, $remainingSec)
+        
+        $percent = [math]::Max(0, [math]::Min(100, $percent))
+        $progParams = @{
+            Activity        = "正在压缩视频: $rel"
+            Status          = "当前速率: $($speed)x | 已处理: $currentTimeStr"
+            PercentComplete = $percent
+        }
+        # 如果有剩余时间估算则加入
+        if ($remainingSec -gt 0) { $progParams["SecondsRemaining"] = $remainingSec }
+        
+        Write-Progress @progParams
+    }
 
     # 外层 try 包裹整个循环，确保 finally 能在函数结束时执行一次
     try {
@@ -512,21 +517,81 @@ function Invoke-ProcessTask {
             $cmdObj = $Task.Cmds[$idx]
             $toolLabel = if ($totalCmds -gt 1) { "[$($cmdObj.ToolName)] ($($idx+1)/$totalCmds)" } else { "[$($cmdObj.ToolName)]" }
             $output = ""
-            
+            $currentExitCode = -1 
             try {
                 if ($Task.Type.ToString() -eq "video") {
+
                     if ($ShowDetails) { Write-Host "CMD ${toolLabel}: $($cmdObj.DisplayCmd)" -ForegroundColor Yellow }
-                  
-                    & $cmdObj.Path @($cmdObj.Args)
+                    if ($cmdObj.ToolName -like "*ffmpeg*") {
+                        $ffmpegPath = $Task.Cmds[0].Path
+                        $ffprobePath = $ffmpegPath -ireplace 'ffmpeg\.exe$', 'ffprobe.exe'
+                        $totalSeconds = 0
+        
+                        if (Test-Path $ffprobePath) {
+                            try {
+                                $durationStr = & $ffprobePath -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$src"
+                                if ([double]::TryParse($durationStr.Trim(), [ref]$totalSeconds)) {
+                                # 成功获取 totalSeconds
+                                }
+                            } catch {
+                             # 探测失败则回退到 0，不影响后续执行
+                            }
+                        }
+
+                        $proc = New-Object System.Diagnostics.Process
+                        $proc.StartInfo.FileName = $cmdObj.Path
+                        # 确保参数作为字符串传递
+                        $proc.StartInfo.Arguments = $cmdObj.Args -join " "
+                        $proc.StartInfo.RedirectStandardError = $true
+                        $proc.StartInfo.UseShellExecute = $false
+                        $proc.StartInfo.CreateNoWindow = $true
+                        
+                        $proc.Start() | Out-Null
+                        while (-not $proc.HasExited) {
+                            $line = $proc.StandardError.ReadLine()
+                            if ($null -ne $line) {
+                                # 匹配 FFmpeg 标准输出中的 time 和 speed
+                                # 格式参考: time=00:00:05.12 speed=2.45x
+                                if ($line -match "time=(\d{2}:\d{2}:\d{2}\.\d{2}).*speed=\s*(\d+\.?\d*)x") {
+                                     $currentTimeStr = $Matches[1]
+                                     $speed = [double]$Matches[2]
+                        
+                                     # 转换当前处理到的时间为秒
+                                     $ts = [timespan]::Parse($currentTimeStr)
+                                     $currentSec = $ts.TotalSeconds
+                        
+                                     # 核心计算逻辑
+                                     $percent=0
+                                     $remainingSec=-1
+                                     if ($totalSeconds -gt 0) {
+                                          $percent = [math]::Min(100, ($currentSec / $totalSeconds) * 100)
+                                          if ($speed -gt 0.05) {
+                                              $remainingSec = ($totalSeconds - $currentSec) / $speed
+                                          }
+                                     } 
+                                     & $UpdateProgressUI -percent $percent -speed $speed -currentTimeStr $currentTimeStr -remainingSec $remainingSec
+                                }                          
+                            }
+                        }
+                        $proc.WaitForExit()
+                        $currentExitCode = $proc.ExitCode
+                        Write-Progress -Activity "正在压缩视频: $rel" -Completed
+                        Write-Host -NoNewline "`e[2K`e[G"
+
+                    } else {
+                        & $cmdObj.Path @($cmdObj.Args)
+                        $currentExitCode = $LASTEXITCODE
+                    }
                 } else {
                     $output = & $cmdObj.Path @($cmdObj.Args) 2>&1
+                    $currentExitCode = $LASTEXITCODE
                     if ($ShowDetails) {
                         Write-Host "CMD ${toolLabel}: $($cmdObj.DisplayCmd)" -ForegroundColor Yellow 
                         Write-Host ($output -join "`n") -ForegroundColor Yellow
                     }
                 }
 
-                if ($LASTEXITCODE -eq 0 -and (Test-Path $tempOut)) {
+                if ($currentExitCode -eq 0 -and (Test-Path $tempOut)) {
                     # 必须在 Move-Item 之前获取大小，因为移动后临时路径就消失了
                     $resultTemplate.NewBytes = (Get-Item $tempOut).Length 
                     #Move-Item $tempOut $finalOut -Force
@@ -613,10 +678,10 @@ function Update-GlobalProgress {
         $stats[$type].NewBytes += $res.NewBytes
         $stats[$type].Success++
         $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
-        Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $script:counter -Total $allRawTasks.Count -ElapsedSeconds $elapsed
+        Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $script:counter -Total $allTasks.Count -ElapsedSeconds $elapsed
     } else {
         $stats[$type].Failed++
-        Write-Host "✖ 处理失败 ($($script:counter)/$($allRawTasks.Count)): $($res.File)" -ForegroundColor Red
+        Write-Host "✖ 处理失败 ($($script:counter)/$($allTasks.Count)): $($res.File)" -ForegroundColor Red
     }
 }
 
@@ -638,10 +703,10 @@ if ($parallelEnabled -and @($parallelTasks).Count -gt 0) {
             $stats[$type].NewBytes += $res.NewBytes
             $stats[$type].Success++
             $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
-            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $allRawTasks.Count -ElapsedSeconds $elapsed
+            Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $allTasks.Count -ElapsedSeconds $elapsed
         } else {
             $stats[$type].Failed++
-            Write-Host "✖ 处理失败 ($counter/$allRawTasks.Count): $($res.File)" -ForegroundColor Red
+            Write-Host "✖ 处理失败 ($counter/$allTasks.Count): $($res.File)" -ForegroundColor Red
         }
     }
     $logMutex.Dispose()
