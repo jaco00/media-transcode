@@ -150,23 +150,6 @@ if ($IsAutoMode) {
     }
 }
 
-# $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
-
-# # 验证输入并转换为枚举类型
-# if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
-#     $CurrentMode = [MediaType]::Image # 默认值
-# } else {
-#     # PowerShell 会自动将匹配的数字字符串转换为对应的枚举成员
-#     [MediaType]$CurrentMode = [int]$InputProcessType
-# }
-
-# if ($CurrentMode -eq [MediaType]::Image -or $CurrentMode -eq [MediaType]::All) {
-#     $InputParallel = Read-Host "请输入图片处理的并行任务数量 (1-32) [默认: $MaxImageThreads]"
-#     if (![string]::IsNullOrWhiteSpace($InputParallel) -and $InputParallel -match '^\d+$') {
-#         $MaxImageThreads = [int]$InputParallel
-#     }
-# } 
-
 if (-not $IsAutoMode) {
     $InputShowDetails = Read-Host "是否输出详细的执行命令 (Y/N) [默认: $(if ($ShowDetails) {'Y'} else {'N'})]"
     if (![string]::IsNullOrWhiteSpace($InputShowDetails)) {
@@ -182,6 +165,7 @@ if ([System.IO.Path]::IsPathRooted($SourcePath)) {
 else {
     $InputRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $SourcePath))
 }
+$InputRoot = $InputRoot.TrimEnd('\').TrimEnd('/')
 Write-Host "扫描目录: $InputRoot" -ForegroundColor Cyan
 
 # 打印过滤信息
@@ -202,13 +186,14 @@ $videoFiles = [System.Collections.Generic.List[object]]::new()
 $skipCount = 0    # 手动跳过计数
 
 # 获取所有文件
-$rawFiles = Get-ChildItem $InputRoot -Recurse -File
+$spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 100
 
-foreach ($file in $rawFiles) {
+foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
+    &$spinner $file.FullName
     # 1. 根子目录过滤 (如果 $IncludeDirs 非空)
     if ($IncludeDirs.Count -gt 0) {
         # 获取相对于 $InputRoot 的完整相对路径
-        $relativePath = $file.FullName.Substring($InputRoot.Length + 1)
+        $relativePath = [System.IO.Path]::GetRelativePath($root, $file.FullName)
         # 分割路径
         $segments = $relativePath.Split([System.IO.Path]::DirectorySeparatorChar)
         
@@ -267,7 +252,7 @@ foreach ($file in $rawFiles) {
         $videoFiles += $file
     }
 }
-
+&$spinner "Done" -Finalize
 
 
 Write-Host "`n  TASK SUMMARY" -ForegroundColor Cyan
@@ -336,64 +321,8 @@ foreach ($key in $configItems.Keys) {
     Write-Host $configItems[$key] -ForegroundColor $valColor
 }
 
-# Write-Host " 源目录: $InputRoot" -ForegroundColor Green
-# if ($Mode -eq 0) {
-#     Write-Host " 备份目录: $BackupRoot" -ForegroundColor Green
-# }
-# if ($SkipExisting) {
-#     Write-Host " 跳过已存在: 已开启" -ForegroundColor Yellow
-# }
-# Write-Host " 扫描子目录: $($IncludeDirs -join ', ')" -ForegroundColor Green
-# Write-Host " 最大线程: $MaxThreads" -ForegroundColor Green
-# Write-Host " 详细输出/静默: $(if ($ShowDetails) {'详细输出 (非静默)'} else {'静默模式'})" -ForegroundColor Green
-
-# if ($parallelEnabled) {
-#     # 提示用户多线程处于活动状态
-#     Write-Host "处理模式: 并行 ($MaxThreads 线程，父进程 PID: $pid)。AVIFjobs: $AVIFJobs" -ForegroundColor Cyan
-# }
-# else {
-    
-#     Write-Host "处理模式: 顺序 (PS 版本: $psMajor, MaxThreads: $MaxThreads)。AVIFjobs: $AVIFJobs。" -ForegroundColor Cyan
-# }
-
-# Write-Host "==========================================================" -ForegroundColor Yellow
-
-
-
-# do {
-#     # 使用 Read-Host 获取用户输入
-#     $response = Read-Host "输入 Y 继续处理，输入 N 退出脚本"
-#     # 将用户输入转换为大写，并使用 -ceq 进行精确比较（不区分大小写）
-#     $responseUpper = $response.ToUpper()
-    
-#     if ($responseUpper -ceq "Y") {
-#         break
-#     }
-#     elseif ($responseUpper -ceq "N") {
-#         Write-Host "用户选择退出。脚本终止。" -ForegroundColor Red
-#         exit 0
-#     }
-#     else {
-#         Write-Host "输入无效，请重新 输入 (Y/N)。" -ForegroundColor Red
-#     }
-# } while ($true)
-
-# Write-Host "继续批量处理..." -ForegroundColor Green
-
 $allFiles= $imageFiles + $videoFiles
 $allTasks = Convert-FilesToTasks -files $allFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type $CurrentMode -UseGpu $useGpu -Silent $IsAutoMode
-
-
-# $videoTaskList = [System.Collections.Generic.List[object]]::new()
-# $imageTaskList = [System.Collections.Generic.List[object]]::new()
-# if ($null -ne $videoFiles -and $videoFiles.Count -gt 0) {
-#     $videoTaskList = Convert-FilesToTasks -files $videoFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Video) -UseGpu $useGpu -Silent $IsAutoMode
-# }
-
-# if ($null -ne $imageFiles -and $imageFiles.Count -gt 0) {
-#     $imageTaskList = Convert-FilesToTasks -files $imageFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type ([MediaType]::Image) -UseGpu $useGpu -Silent $IsAutoMode
-# }
-
 
 # 2. 根据 EnableParallel 属性进行分流
 $parallelTasks = [System.Collections.Generic.List[object]]::new()
@@ -409,27 +338,8 @@ foreach ($task in $allTasks) {
 Write-Host " 🚀 并行队列 (Parallel)  : $($parallelTasks.Count.ToString().PadLeft(8))" -ForegroundColor Green
 Write-Host " ⏳ 串行队列 (Sequential): $($serialTasks.Count.ToString().PadLeft(8))" -ForegroundColor Yellow
 
-# do {
-#     $response = (Read-Host "输入 Y 继续处理，输入 N 退出").ToUpper()
-#     if ($response -eq 'N') { Write-Error "脚本终止"; exit }
-# } while ($response -ne 'Y')
-
 
 if ($IsAutoMode) {
-    # 自动化模式：显示扫描统计并倒计时
-    # Write-Host "`n[等待] 脚本将在 10 秒后自动开始执行，按任意键立即开始，Ctrl+C 退出..." -ForegroundColor Yellow
-    # for ($i = 10; $i -gt 0; $i--) {
-    #     Write-Host -NoNewline "$i.. "
-    #     if ([Console]::KeyAvailable) { $null = [Console]::ReadKey($true); break }
-    #     Start-Sleep -Seconds 1
-    # }
-
-    # $totalSeconds = 15
-    # for ($i = 1; $i -le $totalSeconds; $i++) {
-    #     $remaining = $totalSeconds - $i
-    #     Write-Progress -Activity "任务即将在 10 秒后开始，(Ctrl+C 退出)" -Status "剩余 $remaining 秒" -PercentComplete (($i / $totalSeconds) * 100) -CurrentOperation "正在等待..."
-    #     Start-Sleep -Seconds 1
-    # }
     Write-Host "`n[等待] 脚本进入自动化倒计时 (按任意键立即开始，Ctrl+C 退出):" -ForegroundColor Yellow
     $totalSeconds = 10
     for ($i = $totalSeconds; $i -gt 0; $i--) {
@@ -449,219 +359,10 @@ if ($IsAutoMode) {
 
 Write-Host "继续批量处理..." -ForegroundColor Green
 
-# 打印测试结果
-# foreach ($task in $imageTaskList) {
-#     Write-Host "----------------------------------------" -ForegroundColor Gray
-#     Write-Host "源文件: $($task.Src)"
-#     Write-Host "相对路径: $($task.RelativePath)"
-#     Write-Host "目标文件: $($task.TargetOut)"
-#     Write-Host "备份路径: $($task.BackupPath)"
-#     Write-Host "命令键: $($task.CmdKey)"
-    
-#     foreach ($cmd in $task.Cmds) {
-#         Write-Host "`n  [工具: $($cmd.ToolName)]" -ForegroundColor Green
-#         Write-Host "  执行路径 (Path): $($cmd.Path)"
-#         Write-Host "  参数数组 (Args): $($cmd.Args -join ' | ')"
-#         Write-Host "  显示命令 (DisplayCmd):" -ForegroundColor Yellow
-#         Write-Host "  $($cmd.DisplayCmd)"
-#     }
-# }
-# Write-Host "----------------------------------------" -ForegroundColor Gray
-
-function Invoke-ProcessTask {
-    param(
-        [Parameter(Mandatory)] [PSCustomObject]$Task,
-        [Parameter()] [bool]$ShowDetails = $false,
-        [Parameter()] $LogMutex = $null,
-        [Parameter()] [string]$LogDir = ""
-    )
-
-    if ($null -eq $Task) { return $null }
-
-    $startTime = Get-Date
-    $src, $rel, $tempOut, $finalOut = $Task.Src, $Task.RelativePath, $Task.TempOut, $Task.TargetOut
-    $resultTemplate = [ordered]@{
-        File         = $src
-        Type         = $Task.Type
-        SrcBytes     = $Task.OldSize
-        NewBytes     = 0
-        StartTime    = $startTime
-        Success      = $false
-        ToolUsed     = ""
-        ErrorMessage = ""
-    }
-
-    if (-not $Task.Cmds -or $Task.Cmds.Count -eq 0) {
-        $resultTemplate.ErrorMessage = "任务 [$rel] 配置异常: 无有效工具命令。"
-        return [pscustomobject]$resultTemplate
-    }
-    $UpdateProgressUI = {
-        param($percent, $speed, $currentTimeStr, $remainingSec)
-        
-        $percent = [math]::Max(0, [math]::Min(100, $percent))
-        $progParams = @{
-            Activity        = "正在压缩视频: $rel"
-            Status          = "当前速率: $($speed)x | 已处理: $currentTimeStr"
-            PercentComplete = $percent
-        }
-        # 如果有剩余时间估算则加入
-        if ($remainingSec -gt 0) { $progParams["SecondsRemaining"] = $remainingSec }
-        
-        Write-Progress @progParams
-    }
-
-    # 外层 try 包裹整个循环，确保 finally 能在函数结束时执行一次
-    try {
-        $totalCmds = $Task.Cmds.Count
-        for ($idx = 0; $idx -lt $totalCmds; $idx++) {
-            $cmdObj = $Task.Cmds[$idx]
-            $toolLabel = if ($totalCmds -gt 1) { "[$($cmdObj.ToolName)] ($($idx+1)/$totalCmds)" } else { "[$($cmdObj.ToolName)]" }
-            $output = ""
-            $currentExitCode = -1 
-            try {
-                if ($Task.Type.ToString() -eq "video") {
-
-                    if ($ShowDetails) { Write-Host "CMD ${toolLabel}: $($cmdObj.DisplayCmd)" -ForegroundColor Yellow }
-                    if ($cmdObj.ToolName -like "*ffmpeg*") {
-                        $ffmpegPath = $Task.Cmds[0].Path
-                        $ffprobePath = $ffmpegPath -ireplace 'ffmpeg\.exe$', 'ffprobe.exe'
-                        $totalSeconds = 0
-        
-                        if (Test-Path $ffprobePath) {
-                            try {
-                                $durationStr = & $ffprobePath -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$src"
-                                if ([double]::TryParse($durationStr.Trim(), [ref]$totalSeconds)) {
-                                # 成功获取 totalSeconds
-                                }
-                            } catch {
-                             # 探测失败则回退到 0，不影响后续执行
-                            }
-                        }
-
-                        $proc = New-Object System.Diagnostics.Process
-                        $proc.StartInfo.FileName = $cmdObj.Path
-                        # 确保参数作为字符串传递
-                        $proc.StartInfo.Arguments = $cmdObj.Args -join " "
-                        $proc.StartInfo.RedirectStandardError = $true
-                        $proc.StartInfo.UseShellExecute = $false
-                        $proc.StartInfo.CreateNoWindow = $true
-                        
-                        $proc.Start() | Out-Null
-                        while (-not $proc.HasExited) {
-                            $line = $proc.StandardError.ReadLine()
-                            if ($null -ne $line) {
-                                # 匹配 FFmpeg 标准输出中的 time 和 speed
-                                # 格式参考: time=00:00:05.12 speed=2.45x
-                                if ($line -match "time=(\d{2}:\d{2}:\d{2}\.\d{2}).*speed=\s*(\d+\.?\d*)x") {
-                                     $currentTimeStr = $Matches[1]
-                                     $speed = [double]$Matches[2]
-                        
-                                     # 转换当前处理到的时间为秒
-                                     $ts = [timespan]::Parse($currentTimeStr)
-                                     $currentSec = $ts.TotalSeconds
-                        
-                                     # 核心计算逻辑
-                                     $percent=0
-                                     $remainingSec=-1
-                                     if ($totalSeconds -gt 0) {
-                                          $percent = [math]::Min(100, ($currentSec / $totalSeconds) * 100)
-                                          if ($speed -gt 0.05) {
-                                              $remainingSec = ($totalSeconds - $currentSec) / $speed
-                                          }
-                                     } 
-                                     & $UpdateProgressUI -percent $percent -speed $speed -currentTimeStr $currentTimeStr -remainingSec $remainingSec
-                                }                          
-                            }
-                        }
-                        $proc.WaitForExit()
-                        $currentExitCode = $proc.ExitCode
-                        Write-Progress -Activity "正在压缩视频: $rel" -Completed
-                        Write-Host -NoNewline "`e[2K`e[G"
-
-                    } else {
-                        & $cmdObj.Path @($cmdObj.Args)
-                        $currentExitCode = $LASTEXITCODE
-                    }
-                } else {
-                    $output = & $cmdObj.Path @($cmdObj.Args) 2>&1
-                    $currentExitCode = $LASTEXITCODE
-                    if ($ShowDetails) {
-                        Write-Host "CMD ${toolLabel}: $($cmdObj.DisplayCmd)" -ForegroundColor Yellow 
-                        Write-Host ($output -join "`n") -ForegroundColor Yellow
-                    }
-                }
-
-                if ($currentExitCode -eq 0 -and (Test-Path $tempOut)) {
-                    # 必须在 Move-Item 之前获取大小，因为移动后临时路径就消失了
-                    $resultTemplate.NewBytes = (Get-Item $tempOut).Length 
-                    #Move-Item $tempOut $finalOut -Force
-
-                    Move-Item $tempOut $finalOut -Force -ErrorAction SilentlyContinue
-
-                    if (-not $?) {
-                        $parent = Split-Path $finalOut -Parent
-                        $leaf = Split-Path $finalOut -Leaf
-                        $timestamp = Get-Date -Format "yyyyMMdd_HHmmssfff"
-    
-                        $newName = "conflict_$timestamp`_$leaf"
-                        $newPath = Join-Path $parent $newName
-
-                        Move-Item $tempOut $newPath -Force
-                        Write-Host " [!] 目标被占用，已另存为: $newName" -ForegroundColor Yellow
-                    }
-
-                    
-                    if (-not [string]::IsNullOrWhiteSpace($Task.BackupPath)) {
-                        if (-not (Test-Path $Task.BackupDir)) { New-Item $Task.BackupDir -ItemType Directory -Force | Out-Null }
-                        Move-Item $src $Task.BackupPath -Force
-                    }
-
-                    $resultTemplate.Success  = $true
-                    $resultTemplate.ToolUsed = $cmdObj.ToolName
-                    return [pscustomobject]$resultTemplate
-                } else {
-                    throw "命令: $($cmdObj.DisplayCmd)`n退出码: $LASTEXITCODE`n终端输出: $($output -join "`n")"
-                }
-            }
-            catch {
-                # 记录日志前清理当前方案产生的残余
-                if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
-
-                $logFile = Join-Path $LogDir "err-$(Get-Date -Format 'yyyy-MM-dd').log"
-                $errDetail = $_.Exception.Message
-                $logContent = "[$(Get-Date -Format 'HH:mm:ss')] 失败: $rel`n方案: $toolLabel`n错误: $errDetail`n$('-' * 60)"
-                
-
-                if ($null -ne $LogMutex) {
-                    $null = $LogMutex.WaitOne(); try { Add-Content $logFile "`n$logContent" } finally { $LogMutex.ReleaseMutex() }
-                } else { Add-Content $logFile "`n$logContent" }
-
-                Write-Host " [FAILED] " -BackgroundColor Red -ForegroundColor White -NoNewline
-                Write-Host " $($cmdObj.DisplayCmd) " -BackgroundColor Black -ForegroundColor Yellow
-                
-                if ($idx -lt ($totalCmds - 1)) {
-                    Write-Host "⚠ $toolLabel 失败，已记录日志，重试下一个方案..." -ForegroundColor Yellow
-                } else {
-                    # 最后一个方案也失败，返回结果对象
-                    Write-Host "✖ 任务彻底失败, 源文件: $src" -ForegroundColor Red
-                    $resultTemplate.ErrorMessage = "全方案失败。末次错误: $errDetail"
-                    $resultTemplate.Success      = $false
-                    return [pscustomobject]$resultTemplate
-                }
-            }
-        } # End For
-    }
-    finally {
-        # 终极保底清理，放在循环外
-        if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
-    }
-}
-
 $stats = @{
     image = @{ SrcBytes = 0; NewBytes = 0; Success = 0; Failed = 0 }
     video = @{ SrcBytes = 0; NewBytes = 0; Success = 0; Failed = 0 }
 }
-
 
 
 $counter = 0
@@ -685,14 +386,19 @@ function Update-GlobalProgress {
     }
 }
 
+$workerScript = Join-Path $PSScriptRoot "worker.ps1"
+
 if ($parallelEnabled -and @($parallelTasks).Count -gt 0) {
     # --- 并行模式 ---
-    $invokeFuncStr = ${function:Invoke-ProcessTask}.ToString()
+    # $invokeFuncStr = ${function:Invoke-ProcessTask}.ToString()
     $logMutex = New-Object System.Threading.Mutex($false, "FileLockMutex")
 
     @($parallelTasks) | ForEach-Object -Parallel {
-        Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
-        Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
+        . $using:workerScript
+
+        Worker -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
+        # Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
+        # Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
     } -ThrottleLimit $MaxThreads | ForEach-Object {
         $res = $_
         $counter++
@@ -712,50 +418,13 @@ if ($parallelEnabled -and @($parallelTasks).Count -gt 0) {
     $logMutex.Dispose()
 }
 
+. "$PSScriptRoot\worker.ps1"
 if ($serialTasks.Count -gt 0) {
     @($serialTasks) | ForEach-Object {
-        $res = Invoke-ProcessTask -Task $_ -ShowDetails $ShowDetails -LogMutex $logMutex -LogDir $InputRoot
+        $res = Worker -Task $_ -ShowDetails $ShowDetails -LogMutex $logMutex -LogDir $InputRoot
         Update-GlobalProgress -Result $res
     }
-
-
-    # $invokeFuncStr = ${function:Invoke-ProcessTask}.ToString()
-    # $logMutex = New-Object System.Threading.Mutex($false, "FileLockMutex")
-
-    # @($serialTasks) | ForEach-Object -Parallel {
-    #     Set-Item -Path function:Invoke-ProcessTask -Value ([ScriptBlock]::Create($using:invokeFuncStr))
-    #     Invoke-ProcessTask -Task $_ -ShowDetails ($using:ShowDetails) -LogMutex ($using:logMutex) -LogDir ($using:InputRoot)
-    # } -ThrottleLimit 2 | ForEach-Object {
-    #      Update-GlobalProgress -Result $_
-    # }
-    # $logMutex.Dispose()
 }
-
-# for ($i = 0; $i -lt $serialTasks.Count; $i++) {
-#     $currentTask = $serialTasks[$i]
-    
-#     # 调用处理函数
-#     $res = Invoke-ProcessTask -Task $currentTask -ShowDetails $ShowDetails -LogMutex $null -LogDir $InputRoot
-
-#     # 获取任务类型 (Image 或 Video)
-#     $type = if ($null -ne $res.Type) { ([string]$res.Type).ToLower() } else { "unknown" }
-#     $elapsed = [math]::Round(((Get-Date) - $res.StartTime).TotalSeconds, 2)
-#     $counter++
-#     if ($res.Success) {
-#         # 成功统计
-#         $stats[$type].SrcBytes += $res.SrcBytes
-#         $stats[$type].NewBytes += $res.NewBytes
-#         $stats[$type].Success++
-        
-#         # 调用输出函数显示进度 (假设已定义 Write-CompressionStatus)
-#         Write-CompressionStatus -File $currentTask.RelativePath -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $allRawTasks.Count -ElapsedSeconds $elapsed
-#     } else {
-#         # 失败统计
-#         $stats[$type].Failed++
-#         # 保持在控制台有明显的失败提示
-#         Write-Host "✖ 处理失败 ($counter/$allRawTasks.Count): $($res.File)" -ForegroundColor Red
-#     }
-# }
 
 # ====================== 处理完成统计 ======================
 Write-Host "`n====================== 处理完成统计 ======================" -ForegroundColor Yellow
@@ -799,536 +468,4 @@ if ($totalSrcBytes -gt 0) {
 $endTime = Get-Date
 $elapsed = ($endTime - $startTime).TotalMinutes
 $elapsedStr = "{0:N2}" -f $elapsed
-
 Write-Host "⏱️ 耗时: $elapsedStr 分钟" -ForegroundColor Yellow
-
-exit
-######################################################################################################################################################################
-
-# # ---------- 保留原来的 ScriptBlock（用于并行模式）----------
-# function Process-Image {
-#     param($file, $config)
-
-#     if ($null -eq $file) { return } # 安全检查
-
-#     # 记录开始时间
-#     $startTime = Get-Date
-
-#     $src = $file.FullName
-#     $rootPath = $config.InputRoot
-#     if ($null -eq $rootPath) { $rootPath = $InputRoot } # fallback for sequential
-
-#     $rel = $src.Substring($rootPath.Length).TrimStart('\')
-#     $dir = Split-Path $rel -Parent
-#     $name = $file.Name
-#     $oldSize = $file.Length
-
-#     # 获取当前 Runspace 的唯一线程 ID
-#     $runspaceId = [System.Threading.Thread]::CurrentThread.ManagedThreadId
-
-#     # 路径构造 (仅当备份启用时使用 $config.BackupRoot)
-#     $backupDir = $null
-#     $backup = $null
-#     if ($config.Mode -eq 0) {
-#         $backupDir = Join-Path $config.BackupRoot $dir
-#         $backup = Join-Path $backupDir $name
-#     }
-
-#     $avifOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".avif")
-#     $tempOut = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($name) + ".tmp")
-    
-#     try {
-
-#         # 0. 输出进度
-#         #Write-Host "[$progress] 正在处理: $rel (Runspace ID: $runspaceId)" -ForegroundColor DarkGray
-
-#         # 2. 转换
-#         $isHEIF = $file.Extension -in @(".heic", ".heif")
-#         $newSize = 0  # 初始化
-#         $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
-#         if ($isHEIF) {
-#             # ── HEIC/HEIF (NConvert) ──
-
-#             # 构造 nconvert 参数
-#             $nconvertArgs = @("-out", "avif")
-#             $nconvertArgs += @("-q", $config.HeicQuality)
-#             $nconvertArgs += "-keep_icc"
-#             $nconvertArgs += "-overwrite"
-
-#             if ($config.ShowDetails) {
-#                 $nconvertArgs += "-v"
-#             }
-#             else {
-#                 $nconvertArgs += "-quiet"
-#             }
-
-#             # 输出文件 (先写 tmp)
-#             $nconvertArgs += @("-o", $tempOut)
-
-#             # 输入文件
-#             $nconvertArgs += $src
-
-#             # 构造参数字符串用于诊断
-#             $nconvertArgStr = "$($nconvertArgs -join ' ')"
-
-#             if ($config.ShowDetails) {
-#                 Write-Host "CMD: $($config.NConvertExe) $nconvertArgStr" -ForegroundColor Yellow
-#                 $output= & $config.NConvertExe @nconvertArgs  2>&1
-#                 Write-Host $output -ForegroundColor Yellow
-#             }
-#             else {
-#                 # 并发修复：直接重定向到 $null，避免 Out-Null 的内存泄漏
-#                 $null = & $config.NConvertExe @nconvertArgs 2>&1
-#             }
-
-#             if ($LASTEXITCODE -ne 0) {
-#                 throw "NConvert 转换失败 (HEIF, ExitCode: $LASTEXITCODE)`n命令: $($config.NConvertExe) $nconvertArgStr"
-#             }
-
-#             # 转换成功后重命名
-#             if (Test-Path $tempOut) {
-#                 Move-Item $tempOut $avifOut -Force
-#             }
-
-#         }
-#         else {
-#             # 转换普通文件 (jpg, png)，使用 Avifenc
-#             $avifArgs = @()
-#             if ($config.encoderOptions) { $avifArgs += $config.encoderOptions }
-#             $avifArgs += @("-q", $config.AvifQuality, $src, $tempOut)
-
-#             # 构造参数字符串用于诊断
-#             $avifArgStr = "$($avifArgs -join ' ')"
-
-#             # 捕获输出用于错误诊断
-#             $output = & $config.AvifEncExe @avifArgs 2>&1
-
-#             if ($config.ShowDetails) {
-#                 Write-Host "CMD: $($config.AvifEncExe) $avifArgStr" -ForegroundColor DarkYellow
-#                 Write-Host $output -ForegroundColor Yellow
-#             }
-
-#             if ($LASTEXITCODE -ne 0) {
-#                 throw "avifenc 编码失败 (退出码: $LASTEXITCODE)`n尝试执行: $($config.AvifEncExe) $avifArgStr`n错误信息: $($output -join "`n")"
-#             }
-
-#             # 转换成功后重命名
-#             if (Test-Path $tempOut) {
-#                 Move-Item $tempOut $avifOut -Force
-#             }
-
-#             # 获取转换后的文件大小
-            
-#         }
-
-#         # 重新获取源文件大小，避免并发时 $file.Length 不准确
-
-#         $newSize = (Get-Item $avifOut).Length
-
-        
-#     }
-#     catch {
-#         # 清理失败 (如果存在部分写入的临时文件)
-#         if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
-#         # 在并行模式下，使用 Write-Host 配合颜色提示失败
-#         Write-Host "✖ 处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
-
-#         # 写入日志 (使用 Mutex 保证线程安全)
-#         $logFile = Join-Path $rootPath "err-$(Get-Date -Format 'yyyy-MM-dd').log"
-#         $logContent = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] 失败: $src`n错误: $($_.Exception.Message)`n" + ("-" * 60) + "`n"
-
-#         $logMutex = $config.LogMutex
-       
-#         try {
-#             $logMutex.WaitOne() | Out-Null  # 请求访问互斥锁
-#             Add-Content $logFile $logContent -ErrorAction SilentlyContinue  # 写入日志
-#         } finally {
-#             $logMutex.ReleaseMutex()  # 释放互斥锁
-#         }
-
-#         return [pscustomobject]@{
-#             File     = $src
-#             SrcBytes = $actualOldSize
-#             NewBytes = 0  # 返回失败时的 NewBytes 设为 0
-#             StartTime = $startTime
-#         }
-#     }
-#     finally {
-#         # 清理临时文件 (.tmp)
-#         if (Test-Path $tempOut) {
-#             Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
-#             Write-Host "临时文件已删除: $tempOut" -ForegroundColor Green
-#         }
-#     }
-#     [pscustomobject]@{
-#         File     = $src
-#         SrcBytes = $actualOldSize
-#         NewBytes = $newSize
-#         StartTime = $startTime
-#     }
-# }
-
-
-# # ---------- 执行处理 (统一入口) ----------
-# if ($imageFiles.Count -gt 0) {
-
-#     $BackupEnabled = ($Mode -eq 0) # 只有 Mode 0 (备份模式) 启用备份
-
-#     # 统计变量
-#     $imageSuccessCount = 0
-#     $imageFailedCount = 0
-#     $imageSrcBytes = 0
-#     $imageNewBytes = 0
-
-#     # 构造配置对象 (用于传递给并行/顺序脚本块)
-#     $scriptConfig = @{
-#         InputRoot      = $InputRoot
-#         BackupRoot     = $BackupRoot
-
-#         HeicQuality    = $HeicQuality
-#         ShowDetails    = $ShowDetails
-#         encoderOptions = $encoderOptions
-
-#         AvifQuality    = $AvifQuality
-#         Mode           = $Mode
-#         BackupEnabled  = $BackupEnabled
-
-#         AvifEncExe     = $AvifEncExe
-#         NConvertExe    = $NConvertExe
-#         LogMutex = [System.Threading.Mutex]::new($false, "Global\PhotoScriptLogMutex")
-#     }
-
-#     if ($parallelEnabled) {
-#         $totalCount = $imageFiles.Count
-#         $range = if ($totalCount -gt 0) { 0..($totalCount - 1) } else { @() }
-
-#         # 必须先转为字符串，因为 ForEach-Object -Parallel 不支持直接传递 $using:ScriptBlock
-
-#         $processFunc = ${function:Process-Image}.ToString()
-
-#         $index = 0
-#         $range | ForEach-Object -Parallel {
-#             $index = $_
-#             $localConfig = $using:scriptConfig
-#             $localFiles = $using:imageFiles
-#             $file = $localFiles[$index]
-#             $total = $using:totalCount
-
-#             $progress = "$($index + 1)/$total"
-
-#             # 在子线程中重建脚本块
-#             Set-Item -Path function:Process-Image -Value ([ScriptBlock]::Create($using:processFunc))
-
-#             # 只做事，不输出
-#             Process-Image $file $localConfig
-#             # $sb = [ScriptBlock]::Create($using:sbStr)
-#             # & $sb $file $localConfig
-#         } -ThrottleLimit $MaxThreads |
-#         ForEach-Object {
-
-#             # 主 Runspace：顺序输出
-#             $index++
-
-#             # 计算耗时
-#             $elapsed = ((Get-Date) - $_.StartTime).TotalSeconds
-
-#             Write-CompressionStatus `
-#                 -File $_.File `
-#                 -SrcBytes $_.SrcBytes `
-#                 -NewBytes $_.NewBytes `
-#                 -Index $index `
-#                 -Total $totalCount `
-#                 -ElapsedSeconds $elapsed
-
-#             # 统计
-#             $script:imageSrcBytes += $_.SrcBytes
-#             if ($_.NewBytes -gt 0) {
-#                 $script:imageNewBytes += $_.NewBytes
-#                 $script:imageSuccessCount++
-#             } else {
-#                 $script:imageFailedCount++
-#             }
-#         }
-
-#     }
-#     else {
-#         # 顺序执行: 直接调用函数
-#         $i = 1
-#         $totalCount = $imageFiles.Count
-#         $imageFiles | ForEach-Object {
-#             $result = Process-Image $_ $scriptConfig
-
-#             # 统计
-#             $imageSrcBytes += $result.SrcBytes
-#             if ($result.NewBytes -gt 0) {
-#                 $imageNewBytes += $result.NewBytes
-#                 $imageSuccessCount++
-#             } else {
-#                 $imageFailedCount++
-#             }
-
-#             $i++
-#         }
-#     }
-# }
-
-# # ---------- 执行处理 (视频 / 顺序扫描) ----------
-# if ($videoFiles.Count -gt 0) {
-#     Write-Host ""
-#     Write-Host ">>> 开始处理视频 (顺序执行)..." -ForegroundColor Magenta
-
-#     # 视频统计
-#     $videoSuccessCount = 0
-#     $videoFailedCount = 0
-#     $videoSrcBytes = 0
-#     $videoNewBytes = 0
-
-#     $i = 1
-#     $totalVideos = $videoFiles.Count
-#     foreach ($file in $videoFiles) {
-#         $src = $file.FullName
-#         $rootPath = $InputRoot
-#         $rel = $src.Substring($InputRoot.Length).TrimStart('\')
-#         $dir = Split-Path $rel -Parent
-#         $name = $file.Name
-#         $oldSize = $file.Length
-#         $fileBaseName = [IO.Path]::GetFileNameWithoutExtension($name)
-                
-#         $progress = "[$i/$totalVideos]"
-                
-#         # 视频固定输出命名规则: name.h265.mp4
-#         $targetName = "$fileBaseName.h265.mp4"
-#         $finalOut = Join-Path $file.Directory.FullName $targetName
-#         $tempOut = "$finalOut.tmp" # 使用 name.h265.mp4.tmp
-    
-#         # 路径构造
-#         $backupDir = $null
-#         $backup = $null
-
-#         if ($Mode -eq 0) {
-#             # 修正从 $config.Mode 变为 $Mode
-#             $backupDir = Join-Path $BackupRoot $dir
-#             $backup = Join-Path $backupDir $name
-#         }
-        
-#         Write-Host "$progress 正在处理视频: [$rel]" -ForegroundColor Cyan
-    
-#         try {
-#             if ($useGpu) {
-#                 $cmdKey = $file.Extension.ToLower()+"_gpu"
-#             }else{
-#                 $cmdKey = $file.Extension.ToLower()+"_cpu"
-#             }
-#             Write-Host "  命令键: $cmdKey" -ForegroundColor Green
-#             $tools = $commandMap[$cmdKey]
-#             if ($null -eq $tools -or $tools.Count -eq 0) {
-#                 throw "错误: 配置中虽然存在键名 [$cmdKey]，但没有关联任何有效的工具命令。"
-#             }
-#             $tool = $tools[0]
-#             $finalArgs = $tool.ArgsArray | ForEach-Object { $_.Replace('$IN$', $src).Replace('$OUT$', $tempOut) }
-#             if ($ShowDetails) {
-#                 $displayCmd = "$($tool.SafePath) $($finalArgs -join ' ')"
-#                 Write-Host "CMD ($($tool.ToolName)): $displayCmd" -ForegroundColor Yellow
-#             }
-#             # 调用 FFmpeg
-
-            
-#             & $tool.Path @finalArgs
-                
-#             if ($LASTEXITCODE -ne 0) {
-#                 throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
-#             }
-
-#             # 转换成功后重命名
-#             if (Test-Path $tempOut) {
-#                  Move-Item $tempOut $finalOut -Force
-#             }
-
-
-
-
-
-            
-#             # # # 2. 转换 (FFmpeg)
-#             # $ffmpegArgs = @("-y", "-hide_banner", "-i", $src)
-#             # $ffmpegArgs += @("-c:v", $Codec)
-                
-#             # if ($useGpu) {
-#             #     $ffmpegArgs += @("-cq", $CQ)
-#             #     $ffmpegArgs += @("-preset", "p4")
-#             # }
-#             # else {
-#             #     $ffmpegArgs += @("-crf", $CRF)
-#             #     $ffmpegArgs += @("-preset", "medium")
-#             # }
-
-#             # $ffmpegArgs += @("-c:a", "aac")
-#             # $ffmpegArgs += @("-movflags", "+faststart")
-#             # $ffmpegArgs += @("-pix_fmt", "yuv420p")
-
-#             # # 参数必须在输出文件名之前
-#             # if ($ShowDetails) {
-#             #     # 详细模式不加 loglevel warning
-#             # }
-#             # else {
-#             #     # 增加 -stats 以在 warning 级别下依然显示进度条
-#             #     $ffmpegArgs += @("-loglevel", "warning", "-stats")
-                    
-#             #     # 如果是 libx265 且为静默模式，抑制其内部 info 输出
-#             #     if ($Codec -eq "libx265") {
-#             #         $ffmpegArgs += @("-x265-params", "log-level=error")
-#             #     }
-#             # }
-
-#             # # 增加 -f mp4 参数，因为输出文件以后缀 .tmp 结尾，ffmpeg 无法自动判断格式
-#             # $ffmpegArgs += @("-f", "mp4", $tempOut)
-                
-#             # if ($ShowDetails) {
-#             #     $cmd = "$FFmpegExe $($ffmpegArgs -join ' ')"
-#             #     Write-Host "CMD: $cmd" -ForegroundColor Yellow
-#             # }
-                
-#             # # Dry-Run 模式：仅输出命令
-#             # if ($Mode -eq 9) {
-#             #     Write-Host "[DRY-RUN] 处理视频: $rel" -ForegroundColor Cyan
-#             #     # ...
-#             #     continue
-#             # }
-#             # else {
-#             #     # 调用 FFmpeg
-#             #     & $FFmpegExe @ffmpegArgs
-                
-#             #     if ($LASTEXITCODE -ne 0) {
-#             #         throw "FFmpeg 转换失败 (ExitCode: $LASTEXITCODE)"
-#             #     }
-
-#             #     # 转换成功后重命名
-#             #     if (Test-Path $tempOut) {
-#             #         Move-Item $tempOut $finalOut -Force
-#             #     }
-#             # }
-            
-#             # 3. 显示压缩率
-#             $actualOldSize = if (Test-Path $src) { (Get-Item $src).Length } else { $oldSize }
-#             $newSize = (Get-Item $finalOut).Length
-
-#             Write-CompressionStatus -File $rel -SrcBytes $actualOldSize -NewBytes $newSize -Index $i -Total $totalVideos
-
-#             # 统计
-#             $videoSrcBytes += $actualOldSize
-#             $videoNewBytes += $newSize
-#             $videoSuccessCount++
-
-#             if ($Mode -eq 0) {
-#                 # 修正变量名
-#                 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
-#                 Move-Item $src $backup -Force
-#                 Write-Host "💾 移动源文件$src->$backup" -ForegroundColor Blue
-#             }
-
-#             $i++
-#         }
-#         catch {
-#             Write-Host "✖ 视频处理失败: $rel $($_.Exception.Message)" -ForegroundColor Red
-#             $videoFailedCount++
-#         }
-#         finally {
-#             # 强制清理临时文件
-#             if (Test-Path $tempOut) {
-#                 Remove-Item $tempOut -Force -ErrorAction SilentlyContinue
-#                 Write-Host "[清理] 已移除临时文件: $tempOut" -ForegroundColor Gray
-#             }
-#         }
-#     }
-# }
-
-
-
-
-
-# Write-Host ""
-# Write-Host "✅ 全部完成" -ForegroundColor Yellow
-# Write-Host "====================== 处理完成统计 ======================" -ForegroundColor Yellow
-
-# if ($imageFiles.Count -gt 0) {
-#     $imageTotalCount = $imageSuccessCount + $imageFailedCount
-#     Write-Host "📸 图片处理: 成功 $imageSuccessCount 个, 失败 $imageFailedCount 个" -ForegroundColor Cyan
-#     if ($imageTotalCount -gt 0) {
-#         $imageSaved = $imageSrcBytes - $imageNewBytes
-#         $imageSavedStr = Format-Size $imageSaved
-#         Write-Host "   原大小: $(Format-Size $imageSrcBytes) → 转换后: $(Format-Size $imageNewBytes) | 节省: $imageSavedStr" -ForegroundColor Green
-#     }
-# }
-
-# if ($videoFiles.Count -gt 0) {
-#     $videoTotalCount = $videoSuccessCount + $videoFailedCount
-#     Write-Host "🎬 视频处理: 成功 $videoSuccessCount 个, 失败 $videoFailedCount 个" -ForegroundColor Cyan
-#     if ($videoTotalCount -gt 0) {
-#         $videoSaved = $videoSrcBytes - $videoNewBytes
-#         $videoSavedStr = Format-Size $videoSaved
-#         Write-Host "   原大小: $(Format-Size $videoSrcBytes) → 转换后: $(Format-Size $videoNewBytes) | 节省: $videoSavedStr" -ForegroundColor Green
-#     }
-# }
-
-# $totalSrcBytes = $imageSrcBytes + $videoSrcBytes
-# $totalNewBytes = $imageNewBytes + $videoNewBytes
-# if ($totalSrcBytes -gt 0) {
-#     $totalSaved = $totalSrcBytes - $totalNewBytes
-#     $totalSavedStr = Format-Size $totalSaved
-#     $totalPercent = [math]::Round(($totalNewBytes / $totalSrcBytes) * 100, 1)
-#     Write-Host "💾 总计节省: $totalSavedStr ($(Format-Size $totalSrcBytes) → $(Format-Size $totalNewBytes), $totalPercent%)" -ForegroundColor Green
-# }
-
-# # 计算运行时间
-# $endTime = Get-Date
-# $elapsed = ($endTime - $startTime).TotalMinutes
-# $elapsedStr = "{0:N2}" -f $elapsed
-
-# Write-Host "⏱️ 耗时: $elapsedStr 分钟" -ForegroundColor Yellow
-
-
-# 4. 询问压制参数
-# if ($true) {
-#     # 最大并行线程
-#     $InputMaxThreads = Read-Host "请输入并行处理线程数 (MaxThreads) [默认: $MaxThreads]"
-#     $MaxThreads = if ([string]::IsNullOrWhiteSpace($InputMaxThreads)) { $MaxThreads } else { [int]$InputMaxThreads }
-
-#     # 质量设置确认
-#     # 默认视频质量标签
-#     $videoQualityLabel = "CRF"
-#     $defaultVideoQuality = $CRF
-#     if ($useGpu) {
-#         $videoQualityLabel = "CQ"
-#         $defaultVideoQuality = $CQ
-#     }
-    
-#     $UseDefaultQuality = Read-Host "是否使用默认质量设置 (HEIC: $HeicQuality, AVIF: $AvifQuality, $videoQualityLabel = $defaultVideoQuality) ? (Y/N) [默认: Y]"
-#     if ($UseDefaultQuality -match '^[Nn]') {
-#         $InputHeicQuality = Read-Host "请输入 HEIC 转换质量 (HeicQuality) [默认: $HeicQuality]"
-#         $HeicQuality = if ([string]::IsNullOrWhiteSpace($InputHeicQuality)) { $HeicQuality } else { [int]$InputHeicQuality }
-
-#         $InputAvifQuality = Read-Host "请输入 AVIF 质量 (0-100) [默认: $AvifQuality]"
-#         $AvifQuality = if ([string]::IsNullOrWhiteSpace($InputAvifQuality)) { $AvifQuality } else { [int]$InputAvifQuality }
-        
-#         if ($useGpu) {
-#             $InputVideoQuality = Read-Host "请输入 NVIDIA 显卡压缩质量 (CQ, 建议 25-30) [默认: $CQ]"
-#             $CQ = if ([string]::IsNullOrWhiteSpace($InputVideoQuality)) { $CQ } else { [string]$InputVideoQuality }
-#         }
-#         else {
-#             $InputVideoQuality = Read-Host "请输入 CPU 视频压缩质量 (CRF, 建议 21-25) [默认: $CRF]"
-#             $CRF = if ([string]::IsNullOrWhiteSpace($InputVideoQuality)) { $CRF } else { [string]$InputVideoQuality }
-#         }
-#     }
-
-#     # 详细输出/静默模式
-#     $InputShowDetails = Read-Host "是否输出详细的执行命令 (Y/N) [默认: $(if ($ShowDetails) {'Y'} else {'N'})]"
-#     if (![string]::IsNullOrWhiteSpace($InputShowDetails)) {
-#         $ShowDetails = $InputShowDetails -match '^[Yy]$'
-#     }
-# }
-
-
-
-
-# **重要提示:**
-# 处理 HEIC/HEIF 文件现在依赖 NConvert (XnView).

@@ -412,6 +412,27 @@ function Get-SupportedExtensions {
     return @{ image = $imageExts | Sort-Object; video = $videoExts | Sort-Object }
 }
 
+
+function Get-VideoDuration {
+    param (
+        [string]$FFprobePath,
+        [string]$SourceFile
+    )
+    $duration = 0
+    if (Test-Path $FFprobePath) {
+        try {
+            # 获取时长字符串并去除可能的空白字符
+            $output = & $FFprobePath -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$SourceFile" 2>$null
+            if ($output -and [double]::TryParse($output.Trim(), [ref]$duration)) {
+                return $duration
+            }
+        } catch {
+            # 探测失败，默认返回 0
+        }
+    }
+    return $duration
+}
+
 # 将文件列表转换为任务对象
 function Convert-FilesToTasks {
     param(
@@ -433,6 +454,7 @@ function Convert-FilesToTasks {
         [Parameter(Mandatory = $false)]
         [bool]$Silent = $false   # 新增参数：是否静默处理（不输出转换预览）
     )
+
     $tasks = [System.Collections.Generic.List[object]]::new()
     if ($null -eq $files -or $files.Count -eq 0) { return @() }
     if ($null -eq $script:ConfigJson) {
@@ -457,9 +479,10 @@ function Convert-FilesToTasks {
 
     $supported = Get-SupportedExtensions
     
-
+    $spinner = New-ConsoleSpinner -Title "正在生成任务" -Total $files.Count -SamplingRate 100 
     foreach ($file in $files) {
         $src = $file.FullName
+        & $spinner $src 
         $rel = $src.Substring($InputRoot.Length).TrimStart('\')
         $dir = Split-Path $rel -Parent
         $name = $file.Name
@@ -509,6 +532,7 @@ function Convert-FilesToTasks {
         # 4. 构建任务所需的命令结构体数组
         $readyCmds = @()
         $taskEnableParallel = $false # 默认不开启
+        $duration=0
         if ($commandMap.ContainsKey($cmdKey)) {
             $tools = $commandMap[$cmdKey]
             if ($tools.Count -gt 0) {
@@ -525,6 +549,14 @@ function Convert-FilesToTasks {
                     Args       = $finalArgs
                     DisplayCmd = "$($tool.SafePath) $($finalArgs -join ' ')"
                 }
+                if ($type -eq [MediaType]::Video -and $tool.ToolName -like "*ffmpeg*" ) {
+                    $binDir = Split-Path $tool.Path -Parent
+                    $ffprobePath = Join-Path $binDir ("ffprobe" + [IO.Path]::GetExtension($tool.Path))
+                    if (Test-Path $ffprobePath) {
+                        $duration = Get-VideoDuration -FFprobePath $ffprobePath -SourceFile $src
+                        # Write-Host "Duration:$duration" -ForegroundColor Red
+                    }
+                }
             }
         }
 
@@ -540,10 +572,11 @@ function Convert-FilesToTasks {
             OldSize      = $oldSize
             Cmds         = $readyCmds
             Type         = $type
+            Duration       = $duration
             EnableParallel = $taskEnableParallel
         })
     }
-
+    & $spinner "Done" -Finalize
     return $tasks
 }
 

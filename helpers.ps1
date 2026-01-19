@@ -89,3 +89,46 @@ function Write-CompressionStatus {
     }
 }
 
+function New-ConsoleSpinner {
+    param (
+        [string]$Title = "Processing",
+        [int]$Total = 0,
+        [int]$SamplingRate = 1
+    )
+
+    $count = 0
+    $spinnerChars = @('-', '\', '|', '/')
+    $spinnerIndex = 0
+    $esc = [char]27
+
+    return {
+        param(
+            [string]$Describe = "",
+            [switch]$Finalize
+        )
+
+        $script:count++
+
+        if (
+            $Finalize -or
+            $script:count % $SamplingRate -eq 0 -or
+            ($Total -gt 0 -and $script:count -eq $Total)
+        ) {
+            $char = $spinnerChars[$spinnerIndex % $spinnerChars.Count]
+            $spinnerIndex++
+
+            if ($Total -gt 0) {
+                $percent = [math]::Round(($script:count / $Total) * 100, 1)
+                $percentText = "{0,6:0.0}%" -f $percent
+                $text = "$Title $char [$script:count/$Total $percentText] $Describe"
+            } else {
+                $text = "$Title $char [$script:count] $Describe"
+            }
+            Write-Host -NoNewline "$esc[2K$esc[G$text"
+
+            if ($Finalize) {
+                Write-Host ""
+            }
+        }
+    }.GetNewClosure()
+}
