@@ -1,96 +1,73 @@
-# Media Compression & Transcoding Tool
+# 🚀 媒体批量压缩与转码工具 (Media Compressor Pro)
 
-## 中文版
-
-### 背景故事
-由于多年来积累了大量的图片和视频资料，存储空间日益紧张，需要一个高效、可靠的压缩和归档方案。于是，我提供了核心思路与算法设计，并指导 AI 完成算法实现，最终开发出这个工具。在保证视觉无损的前提下，媒体文件通常可以压缩至原始大小的 **约 50%**。
-
-### 工具特点
-- 支持图片统一压缩为 **AVIF**，视频统一压缩为 **H.265 MP4**  
-- 自动修复苹果格式图片可能存在的 ICC 色彩问题，确保转换后颜色正常  
-- 保留图片的所有 **EXIF** 信息  
-- 可选择交互式操作或批量自动处理  
-
-### 系统要求
-- Windows 10 或更高版本  
-- PowerShell 7.0 或更高版本  
-- 支持 UTF-8 路径（批处理文件已设置 `chcp 65001`）  
-
-### 功能概览
-
-| 命令   | 功能                                      |
-|--------|-----------------------------------------|
-| zip    | 交互式压缩所有媒体文件                     |
-| all    | 自动处理所有媒体文件                       |
-| img    | 只处理图片（转换为 AVIF）                  |
-| video  | 只处理视频（编码为 H.265）                |
-| comp   | 对比源文件与压缩后的质量                  |
-| clean  | 压缩后删除源文件（可指定备份目录）        |
-
-### 使用示例
-```bat
-media.bat zip "D:\Photos" "D:\Photos_Backup"
-media.bat all "D:\Photos"
-media.bat img "D:\Photos\Images"
-media.bat video "D:\Photos\Videos"
-media.bat comp "D:\Photos\Test"
-media.bat clean "D:\Photos" "D:\Photos_Backup"
-```
-
-### 首次使用建议
-- 使用交互模式：`media.bat zip <图片目录>`  
-- 将源文件和转码后的文件放在同一个目录，方便效果比对  
-- 默认参数下，视频和图片均接近人眼无损  
-- 转码效果确认后，可使用 `media.bat clean <源目录> <备份目录>` 备份源文件  
-
-### 免责声明
-操作前请自行备份源文件，本工具不对数据丢失负责。  
+这是一个专为 Windows 环境设计的 **高效媒体处理方案**。由资深程序员提供底层算法思路，利用 AI 协作编码完成。它能够帮助你将庞大的照片库和视频库，在**视觉无损**的前提下，体积减小约 **50%~80%**。
 
 ---
 
-## English Version
+## ✨ 核心亮点
 
-### Story
-Over the years, a large collection of images and videos has accumulated, creating storage pressure. I provided the core ideas and algorithm design and guided AI to implement the algorithms, resulting in this tool. Under visually lossless settings, media files can typically be compressed to **around 50%** of their original size.  
+- 📷 **图片进化**：
+  - 自动将 JPEG/HEIC 转换为 **AVIF**（下一代图像格式）。
+  - **色彩修复**：完美解决苹果 HEIC 在 Windows 上的 ICC 色彩偏差问题。
+  - **元数据保留**：完整保留拍摄时间、GPS 等 EXIF 信息。
+- 🎬 **视频重编码**：
+  - 采用 **H.265 (HEVC)** 编码，统一封装为 MP4。
+  - 智能码率控制，追求画质与体积的最佳平衡。
+- 🛠️ **工业级处理**：
+  - 支持 **UTF-8** 全路径，中文字符串无乱码。
+  - 基于 PowerShell 7+ 异步处理思路，充分利用多核性能。
+  - 内置冲突检测，自动处理文件名重复问题。
 
-### Features
-- Images are uniformly compressed to **AVIF**, videos to **H.265 MP4**  
-- Fixes ICC color issues in Apple image formats to maintain correct colors  
-- Preserves all **EXIF** information in images  
-- Supports interactive or batch processing  
+---
 
-### System Requirements
-- Windows 10 or later  
-- PowerShell 7.0 or later  
-- UTF-8 path support (`chcp 65001` is set in the batch file)  
+## 📂 功能概览
 
-### Command Overview
+| 命令 | 模式 | 描述 |
+| :--- | :--- | :--- |
+| `zip` | 交互式 | 逐个处理并提示，适合初次使用对比画质 |
+| `all` | 自动化 | 全火力全开，处理目录下所有支持的媒体文件 |
+| `img` | 纯图片 | 仅扫描并转换图像为 AVIF |
+| `video` | 纯视频 | 仅扫描并重编码视频为 H.265 |
+| `comp` | 对比 | 快速预览源文件与压缩后文件的质量差异 |
+| `clean` | 清理 | 移动源文件至备份目录，并将压缩文件归位 |
 
-| Command | Function                                  |
-|---------|-------------------------------------------|
-| zip     | Interactive compression for all media     |
-| all     | Automatic processing of all media         |
-| img     | Process images only (convert to AVIF)     |
-| video   | Process videos only (encode to H.265)    |
-| comp    | Compare source and compressed quality     |
-| clean   | Delete source files after compression (backup optional) |
+---
 
-### Usage Examples
-```bat
-media.bat zip "D:\Photos" "D:\Photos_Backup"
-media.bat all "D:\Photos"
-media.bat img "D:\Photos\Images"
-media.bat video "D:\Photos\Videos"
-media.bat comp "D:\Photos\Test"
-media.bat clean "D:\Photos" "D:\Photos_Backup"
+## 💻 系统要求
+
+- **操作系统**: Windows 10 (22H2+) 或 Windows 11
+- **运行环境**: [PowerShell 7.0+](https://github.com/PowerShell/PowerShell/releases) (推荐)
+- **底层组件**: 系统需配置好 `ffmpeg` 路径。
+
+---
+
+## 🚀 快速开始
+
+### 1. 初次尝试（推荐）
+先在小范围文件夹内运行交互模式，确认画质是否满足你的需求。
+该模式转码后的文件就保存在源文件相同的目录里，方便用工具对比转码质量，注意heic文件需要用专业看图软件打开，win11自带的看图软件存在偏色现象，并不是转码过程中引入的偏色，推荐使用XnView。
+```batch
+media.bat zip "E:\手机相册"
 ```
 
-### First Time Use Recommendation
-- Use interactive mode: `media.bat zip <image folder>`  
-- Keep source and transcoded files in the same directory for easy comparison  
-- By default, video and images are visually lossless  
-- Once satisfied, run `media.bat clean <source dir> <backup dir>` to back up and remove original files  
+### 2. 归档清理
+处理完成后，一键将原片移动到硬盘备份目录，源目录只保留压缩版：
+```batch
+media.bat clean "E:\手机相册" "F:\原始归档"
+```
+### 3. 自动处理模式
+当你信任配置后，可以自动批量处理整个目录：
+```batch
+media.bat all "E:\手机相册"  "F:\原始归档"
+```
+---
 
-### Disclaimer
-Please back up your source files before operation. The tool is not responsible for data loss.
+## ⚠️ 免责声明
 
+> **数据无价，操作需谨慎。**
+> 
+> 使用前请务必 **自行备份重要源文件**。作者对使用本工具产生的任何数据丢失或硬件损耗不承担法律责任。
+
+---
+
+**Built with ❤️ by Developer & AI Collaboration**
