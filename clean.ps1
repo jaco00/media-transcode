@@ -86,7 +86,7 @@ foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
 
 # 使用 List<T> 替代 += 提升性能
 $imageMatches = [System.Collections.Generic.List[object]]::new()
-$videoMatches = [System.Collections.Generic.List[object]]::new()
+$vidMatches = [System.Collections.Generic.List[object]]::new()
 $imageUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 $videoUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 
@@ -96,6 +96,9 @@ $imgDstBytes = 0L
 $vidSrcBytes = 0L
 $vidDstBytes = 0L
 
+$vidDstCount = 0L
+$imgDstCount = 0L
+
 # ----------------------------------------------------
 # 关键优化区域：单次高效遍历文件组
 # ----------------------------------------------------
@@ -104,11 +107,19 @@ foreach ($entry in $filesByDirAndBase.Values) {
     # 查找所有源文件和目标文件
     $file = if ($entry.OriginalFile) { $entry.OriginalFile } else { $entry.ConvertedFile }
     &$spinnerTask $file.FullName
+    if (-not $file){
+         continue
+    }
     if (-not $entry.OriginalFile){
+        if ($entry.ConvertedFile.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $imgDstCount += 1
+        }elseif ($entry.ConvertedFile.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $vidDstCount += 1
+        }
         continue
     }
-    $ext = $entry.OriginalFile.Extension.ToLowerInvariant()
 
+    $ext = $file.Extension.ToLowerInvariant()
     if ($entry.ConvertedFile) {
         
         $matchObj = [pscustomobject]@{
@@ -123,7 +134,7 @@ foreach ($entry in $filesByDirAndBase.Values) {
             $imgDstBytes += $entry.ConvertedFile.Length
         }
         elseif ($ext -in $videoSrcExt) {
-            $videoMatches.Add($matchObj)
+            $vidMatches.Add($matchObj)
             $vidSrcBytes += $entry.OriginalFile.Length
             $vidDstBytes += $entry.ConvertedFile.Length
         }
@@ -131,122 +142,17 @@ foreach ($entry in $filesByDirAndBase.Values) {
         if ($ext -in $imageSrcExt) {
             $imageUnconverted.Add($entry.OriginalFile)
         }elseif ($ext -in $videoSrcExt) {
-            Write-Host "$ext  ->       $entry.OriginalFile.FullName" 
             $videoUnconverted.Add($entry.OriginalFile)
         }
     }
 }
-# if (-not $dstImage) {
-#     # 修复：显式转换为 FileInfo 数组
-#     $imageUnconverted.AddRange([System.IO.FileInfo[]]$srcImagesInGroup)
-# }
-
-# # 未转换视频: 如果组内有视频源文件，但没有 .h265.mp4 目标
-# if (-not $dstVideo) {
-#     # 修复：显式转换为 FileInfo 数组
-#     $videoUnconverted.AddRange([System.IO.FileInfo[]]$srcVideosInGroup)
-# }
-
-
-
-# foreach ($ext in $group.Keys) {
-#     $file = $group[$ext]
-    
-#     if ($ext -eq $imageDstExt) {
-#         # .avif
-#         $dstImage = $file
-#     }
-#     elseif ($ext -eq $videoDstExt) {
-#         # .h265.mp4
-#         $dstVideo = $file
-#     }
-#     elseif ($imageSrcExt -contains $ext) {
-#         $srcImagesInGroup += $file
-#     }
-#     elseif ($videoSrcExt -contains $ext) {
-#         $srcVideosInGroup += $file
-#     }
-# }
-
-# # 1. 处理图片匹配 (已转换)
-# if ($dstImage) {
-#     # 优化: 找到任意一个匹配的源文件作为待删除对象
-#     $src = $srcImagesInGroup | Select-Object -First 1
-#     if ($src) {
-#         $imageMatches.Add([pscustomobject]@{
-#                 Src          = $src
-#                 Dst          = $dstImage
-#                 #RelativePath = $src.FullName.Substring($Dir.Length + 1)
-#                 RelativePath=[System.IO.Path]::GetRelativePath($SourcePath, $src.FullName)
-#             })
-#         $imgSrcBytes += $src.Length
-#         $imgDstBytes += $dstImage.Length
-#     }
-# }
-
-# # 2. 处理视频匹配 (已转换)
-# if ($dstVideo) {
-#     # 优化: 找到任意一个匹配的源文件作为待删除对象
-#     $src = $srcVideosInGroup | Select-Object -First 1
-#     if ($src) {
-#         $videoMatches.Add([pscustomobject]@{
-#                 Src          = $src
-#                 Dst          = $dstVideo
-#                 RelativePath=[System.IO.Path]::GetRelativePath($SourcePath, $src.FullName)
-#             })
-#         $vidSrcBytes += $src.Length
-#         $vidDstBytes += $dstVideo.Length
-#     }
-# }
-
-# # 3. 处理未转换文件 (排除已匹配的源文件，避免重复)
-# # 未转换图片: 如果组内有图片源文件，但没有 .avif 目标
-# if (-not $dstImage) {
-#     # 修复：显式转换为 FileInfo 数组
-#     $imageUnconverted.AddRange([System.IO.FileInfo[]]$srcImagesInGroup)
-# }
-
-# # 未转换视频: 如果组内有视频源文件，但没有 .h265.mp4 目标
-# if (-not $dstVideo) {
-#     # 修复：显式转换为 FileInfo 数组
-#     $videoUnconverted.AddRange([System.IO.FileInfo[]]$srcVideosInGroup)
-# }
-# ----------------------------------------------------
-
-# # 辅助函数：格式化文件大小
-# function Format-Size {
-#     param([long]$bytes)
-#     if ($bytes -ge 1GB) {
-#         return "{0:N2} GB" -f ($bytes / 1GB)
-#     }
-#     elseif ($bytes -ge 1MB) {
-#         return "{0:N2} MB" -f ($bytes / 1MB)
-#     }
-#     elseif ($bytes -ge 1KB) {
-#         return "{0:N2} KB" -f ($bytes / 1KB)
-#     }
-#     else {
-#         return "$bytes B"
-#     }
-# }
-
 # === 统计计算 ===
 # 已转换的文件统计（字节数已在匹配时累加）
 $imgSrcSize = $imgSrcBytes
 $imgDstSize = $imgDstBytes
-$imgSavedSize = $imgSrcSize - $imgDstSize
-$imgSavedPercent = if ($imgSrcSize -gt 0) { 
-    [math]::Round((1 - $imgDstSize / $imgSrcSize) * 100, 1) 
-}
-else { 0 }
 
 $vidSrcSize = $vidSrcBytes
 $vidDstSize = $vidDstBytes
-$vidSavedSize = $vidSrcSize - $vidDstSize
-$vidSavedPercent = if ($vidSrcSize -gt 0) { 
-    [math]::Round((1 - $vidDstSize / $vidSrcSize) * 100, 1) 
-}
-else { 0 }
 
 # 未转换的文件统计
 $imgUnconvertedSize = if ($imageUnconverted.Count -gt 0) {
@@ -271,52 +177,33 @@ Write-Host "[ 扫描结果 ]" -ForegroundColor Yellow
 Write-Host ("-" * 40) -ForegroundColor DarkGray
 
 # 图片统计
-Write-Host "📸 图片文件" -ForegroundColor Cyan
-if ($imageMatches.Count -gt 0) {
-    Write-Host "  已压缩: $($imageMatches.Count) 张" -ForegroundColor White
-    Write-Host "  原始大小: $(Format-Size $imgSrcSize)" -ForegroundColor Gray
-    Write-Host "  压缩后大小: $(Format-Size $imgDstSize)" -ForegroundColor Gray
-    Write-Host "  节省空间: $(Format-Size $imgSavedSize) ($imgSavedPercent%)" -ForegroundColor Green
+$imageParams = @{
+    Title            = "📸 图片文件"
+    Count            = $imageMatches.Count 
+    SrcSize          = $imgSrcSize  
+    DstSize          = $imgDstSize  # 100MB
+    UnconvertedCount = $imageUnconverted.Count 
+    UnconvertedSize  = $imgUnconvertedSize 
+    DoneCount     = $imgDstCount 
 }
-else {
-    Write-Host "  已压缩: 0 张" -ForegroundColor DarkGray
-}
+Write-ScanSummary @imageParams
 
-if ($imageUnconverted.Count -gt 0) {
-    Write-Host "  未转换: $($imageUnconverted.Count) 张" -ForegroundColor Yellow
-    Write-Host "  总大小: $(Format-Size $imgUnconvertedSize)" -ForegroundColor Gray
+$vidParams = @{
+    Title            = "🎬 视频文件" 
+    Count            = $vidMatches.Count 
+    SrcSize          = $vidSrcSize  
+    DstSize          = $vidDstSize  # 100MB
+    UnconvertedCount = $videoUnconverted.Count 
+    UnconvertedSize  = $vidUnconvertedSize 
+    DoneCount     = $vidDstCount 
 }
-else {
-    Write-Host "  未转换: 0 张" -ForegroundColor DarkGray
-}
-Write-Host ""
-
-# 视频统计
-Write-Host "🎬 视频文件" -ForegroundColor Cyan
-if ($videoMatches.Count -gt 0) {
-    Write-Host "  已压缩: $($videoMatches.Count) 个" -ForegroundColor White
-    Write-Host "  原始大小: $(Format-Size $vidSrcSize)" -ForegroundColor Gray
-    Write-Host "  压缩后大小: $(Format-Size $vidDstSize)" -ForegroundColor Gray
-    Write-Host "  节省空间: $(Format-Size $vidSavedSize) ($vidSavedPercent%)" -ForegroundColor Green
-}
-else {
-    Write-Host "  已压缩: 0 个" -ForegroundColor DarkGray
-}
-
-if ($videoUnconverted.Count -gt 0) {
-    Write-Host "  未转换: $($videoUnconverted.Count) 个" -ForegroundColor Yellow
-    Write-Host "  总大小: $(Format-Size $vidUnconvertedSize)" -ForegroundColor Gray
-}
-else {
-    Write-Host "  未转换: 0 个" -ForegroundColor DarkGray
-}
-Write-Host ""
+Write-ScanSummary @vidParams
 
 # 总计
-if ($imageMatches.Count + $videoMatches.Count -gt 0) {
+if ($imageMatches.Count + $vidMatches.Count -gt 0) {
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor DarkGray
     Write-Host "📊 总计" -ForegroundColor Magenta
-    Write-Host "  待删除文件: $($imageMatches.Count + $videoMatches.Count) 个" -ForegroundColor White
+    Write-Host "  待删除文件: $($imageMatches.Count + $vidMatches.Count) 个" -ForegroundColor White
     Write-Host "  原始总大小: $(Format-Size $totalSrcSize)" -ForegroundColor Gray
     Write-Host "  压缩后总大小: $(Format-Size $totalDstSize)" -ForegroundColor Gray
     Write-Host "  总节省空间: $(Format-Size $totalSavedSize) ($totalSavedPercent%)" -ForegroundColor Green
@@ -330,7 +217,7 @@ else {
 }
 
 # === 显示文件列表（前10个） ===
-$allMatches = $imageMatches + $videoMatches
+$allMatches = $imageMatches + $vidMatches
 
 if ($allMatches.Count -le 10) {
     Write-Host "待删除文件列表:" -ForegroundColor Yellow
@@ -385,10 +272,10 @@ if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
 # === 确认删除 ===
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
 if ($Mode -eq 0) {
-    Write-Host "⚠️ 警告: 即将移动 $($imageMatches.Count + $videoMatches.Count) 个源文件到备份目录" -ForegroundColor Red
+    Write-Host "⚠️ 警告: 即将移动 $($imageMatches.Count + $vidMatches.Count) 个源文件到备份目录" -ForegroundColor Red
     Write-Host "备份目录: $BackupRoot" -ForegroundColor Yellow
 } else {
-    Write-Host "⚠️ 警告: 即将删除 $($imageMatches.Count + $videoMatches.Count) 个源文件" -ForegroundColor Red
+    Write-Host "⚠️ 警告: 即将删除 $($imageMatches.Count + $vidMatches.Count) 个源文件" -ForegroundColor Red
 }
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
 Write-Host ""

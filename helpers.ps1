@@ -131,3 +131,46 @@ function New-ConsoleSpinner {
         }
     }.GetNewClosure()
 }
+
+function Write-ScanSummary {
+    param (
+        [string]$Title,        # 标题，如 "图片文件"
+        [int]$Count,           # 已压缩数量
+        [long]$SrcSize,        # 原始大小
+        [long]$DstSize,        # 压缩后大小
+        [int]$UnconvertedCount,# 未转换数量
+        [long]$UnconvertedSize,# 未转换大小
+        [int]$DoneCount     # 已删除源文件数量
+    )
+
+    $SavedSize = $SrcSize - $DstSize
+    $SavedPercent = if ($SrcSize -gt 0) { 
+        [math]::Round((1 - $DstSize / $SrcSize) * 100, 1) 
+    }
+    else { 0 }
+
+    # 打印子标题
+    Write-Host "$Title" -ForegroundColor Cyan
+
+    # --- 处理已压缩部分 ---
+    if ($Count -gt 0) {
+        Write-Host ("  已压缩数量: ", $Count) -ForegroundColor White
+        Write-Host ("  原始总计: ", (Format-Size $SrcSize)) -ForegroundColor Gray
+        Write-Host ("  当前总计: ", (Format-Size $DstSize)) -ForegroundColor Gray
+        Write-Host ("  节省空间: ", "$(Format-Size $SavedSize) ($SavedPercent%)") -ForegroundColor Green
+    } else {
+        Write-Host ("  已压缩数量: ", "0") -ForegroundColor DarkGray
+    }
+
+    # --- 处理未转换部分 ---
+    if ($UnconvertedCount -gt 0) {
+        Write-Host ("  未转换数量: ", $UnconvertedCount) -ForegroundColor Yellow
+        Write-Host ("  未转换大小: ", (Format-Size $UnconvertedSize)) -ForegroundColor Gray
+    } else {
+        Write-Host ("  未转换数量: ", "0") -ForegroundColor DarkGray
+    }
+
+    # --- 清理记录 ---
+    Write-Host ("  已删除源文件:",$DoneCount) -ForegroundColor DarkGray
+    Write-Host ("-" * 40) -ForegroundColor DarkGray
+}
