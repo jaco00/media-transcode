@@ -9,6 +9,9 @@ set "CMD=%~1"
 set "SRC_DIR=%~2"
 set "DST_DIR=%~3"
 
+call :CleanPath SRC_DIR
+call :CleanPath DST_DIR
+
 :: Show usage if no command provided
 if "%CMD%" == "" goto :usage
 
@@ -66,6 +69,8 @@ if "%DST_DIR%" == "" (
 )
 goto :end
 
+
+
 :: =============================================================
 :: Error and Usage Information
 :: =============================================================
@@ -95,3 +100,25 @@ exit /b 1
 
 :end
 endlocal
+
+:: =============================================================
+:: CleanPath function
+:: Removes trailing backslashes and quotes
+:: =============================================================
+:CleanPath
+set "temp_val=!%1!"
+if "!temp_val!"=="" goto :eof
+
+:: 去掉末尾双引号
+if "!temp_val:~-1!"=="\"" set "temp_val=!temp_val:~0,-1!"
+
+:: 循环去尾反斜杠
+:strip_loop
+if "!temp_val:~-1!"=="\" (
+    set "temp_val=!temp_val:~0,-1!"
+    goto strip_loop
+)
+
+:: 写回变量
+set "%1=!temp_val!"
+goto :eof

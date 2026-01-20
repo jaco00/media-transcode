@@ -165,7 +165,7 @@ if ([System.IO.Path]::IsPathRooted($SourcePath)) {
 else {
     $InputRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $SourcePath))
 }
-$InputRoot = $InputRoot.TrimEnd('\').TrimEnd('/')
+$InputRoot = (Resolve-Path $InputRoot).Path.TrimEnd([IO.Path]::DirectorySeparatorChar)
 Write-Host "扫描目录: $InputRoot" -ForegroundColor Cyan
 
 # 打印过滤信息
@@ -192,16 +192,12 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     &$spinner $file.FullName
     # 1. 根子目录过滤 (如果 $IncludeDirs 非空)
     if ($IncludeDirs.Count -gt 0) {
-        # 获取相对于 $InputRoot 的完整相对路径
-        $relativePath = [System.IO.Path]::GetRelativePath($root, $file.FullName)
-        # 分割路径
-        $segments = $relativePath.Split([System.IO.Path]::DirectorySeparatorChar)
-        
-        # 跳过根目录文件
-        if ($segments.Count -eq 1) { continue }
-        
-        # 检查一级目录是否匹配
-        if ($segments[0] -notin $IncludeDirs) { continue }
+        if ($file.Directory.FullName -eq $InputRoot) { continue }
+
+        $firstDir = [IO.Path]::GetRelativePath($InputRoot, $file.Directory.FullName).
+            Split([IO.Path]::DirectorySeparatorChar)[0]
+
+        if ($firstDir -notin $IncludeDirs) { continue }
     }
 
     $ext = $file.Extension.ToLower()
@@ -238,13 +234,13 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     }
     elseif ($CurrentMode -in [MediaType]::Video, [MediaType]::All -and $isVideo) {
         $videoPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".h265.mp4")
-        $tmpPath = $videoPath + ".tmp"
+        # $tmpPath = $videoPath + ".tmp"
 
-        # 清理残留的临时文件 (.h265.mp4.tmp)
-        if (Test-Path $tmpPath) { 
-            Write-Host "[清理] 发现并移除残余视频临时文件: $($tmpPath)" -ForegroundColor Gray
-            Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue 
-        }
+        # # 清理残留的临时文件 (.h265.mp4.tmp)
+        # if (Test-Path $tmpPath) { 
+        #     Write-Host "[清理] 发现并移除残余视频临时文件: $($tmpPath)" -ForegroundColor Gray
+        #     Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue 
+        # }
 
         if ($SkipExisting) {
             if ((Test-Path $videoPath) -and (Get-Item $videoPath).Length -gt 0) { continue }
@@ -254,9 +250,9 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
 }
 &$spinner "Done" -Finalize
 
-
-Write-Host "`n  TASK SUMMARY" -ForegroundColor Cyan
-Write-Host ("  " + ("─" * 46)) -ForegroundColor DarkGray
+Write-Host ""
+Write-Host " TASK SUMMARY" -ForegroundColor Cyan
+Write-Host " ────────────" -ForegroundColor DarkGray 
 
 Write-Host " 📸 待处理图片: $($imageFiles.Count)" -ForegroundColor Green
 Write-Host " 🎬 待处理视频: $($videoFiles.Count)" -ForegroundColor Green

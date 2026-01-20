@@ -96,96 +96,6 @@ function Resolve-ToolExe {
 
 
 # --- 3. 交互逻辑：参数确认与修改 ---
-function Invoke-ParameterInteraction2 {
-    param(
-        [Parameter(Mandatory = $false)]
-        [MediaType]$Type = [MediaType]::All,  # 使用枚举类型
-        [bool]$UseGpu = $true,
-        [bool]$Silent = $false
-    )
-
-    if ($null -eq $script:ConfigJson) { if (-not (Load-ToolConfig)) { return @{} } }
-
-    $typeFilter = $Type.ToString().ToLower()
-
-    $ToolList = @() # 预扫描符合条件的工具
-    foreach ($ToolName in $script:ConfigJson.tools.PSObject.Properties.Name) {
-        $Tool = $script:ConfigJson.tools.$ToolName
-        if ($typeFilter -ne "all" -and $Tool.category -ne $typeFilter) { continue }
-        
-        if ($Tool.category -eq "video" -and $Tool.modes) {
-            $targetMode = if ($UseGpu) { "gpu" } else { "cpu" }
-            if ($Tool.modes.$targetMode) {
-                $tParams = if ($Tool.modes.$targetMode.template_parameters) { $Tool.modes.$targetMode.template_parameters } else { $Tool.template_parameters }
-                $ToolList += [pscustomobject]@{ Name = $ToolName; Mode = $targetMode; Params = $tParams; Category = $Tool.category }
-            }
-        } else {
-            $ToolList += [pscustomobject]@{ Name = $ToolName; Mode = "default"; Params = $Tool.template_parameters; Category = $Tool.category }
-        }
-    }
-
-    $FinalParamsMap = @{}
-
-    # --- 逻辑 A: 静默模式 ---
-    if ($Silent) {
-        foreach ($item in $ToolList) {
-            if (-not $FinalParamsMap.ContainsKey($item.Name)) { $FinalParamsMap[$item.Name] = @{} }
-            $FinalParamsMap[$item.Name][$item.Mode] = Get-DefaultParams -Template $item.Params
-        }
-        return $FinalParamsMap
-    }
-
-    # --- 逻辑 B: 非静默模式 (展示所有 -> 询问确认 -> 可选修改) ---
-    Write-Host "`n  TOOLCHAIN PREVIEW" -ForegroundColor Cyan
-    Write-Host ("  " + ("─" * 46)) -ForegroundColor DarkGray
-
-    foreach ($item in $ToolList) {
-        $icon = if ($item.Category -eq "video") { "🎬" } else { "📸" }
-        
-        Write-Host " $icon [$($item.Name)]" -NoNewline -ForegroundColor Yellow
-        if ($item.Mode -ne "default") {
-            $modeColor = if ($item.Mode -eq "gpu") { "Green" } else { "Magenta" }
-            Write-Host " ($($item.Mode))" -ForegroundColor $modeColor
-        } else {
-            Write-Host ""
-        }
-
-        $defaults = Get-DefaultParams -Template $item.Params
-        if ($defaults.Count -eq 0) {
-            Write-Host "    (无自定义参数)" -ForegroundColor Gray
-        } else {
-            foreach ($k in $defaults.Keys) {
-                # 修复：PowerShell 中 "$k: " 会被误认为驱动器引用。使用 "${k}: " 明确范围。
-                Write-Host "    - ${k}: " -NoNewline -ForegroundColor DarkGray
-                Write-Host "$($defaults[$k])" -ForegroundColor Green
-            }
-        }
-       
-    }
-
-    $needModify = Read-Host "确认使用以上默认值请按 [回车]，如需修改参数请输入 [y]"
-    $doModify = ($needModify -match "^[yY]$")
-
-    foreach ($item in $ToolList) {
-        if (-not $FinalParamsMap.ContainsKey($item.Name)) { $FinalParamsMap[$item.Name] = @{} }
-        
-        $currentDefaults = Get-DefaultParams -Template $item.Params
-        if ($doModify -and $currentDefaults.Count -gt 0) {
-            $label = if ($item.Mode -eq "default") { $item.Name } else { "$($item.Name) ($($item.Mode))" }
-            Write-Host "`n--- 正在修改 [$label] 的参数 ---" -ForegroundColor Cyan
-            $modified = @{}
-            foreach ($k in $currentDefaults.Keys) {
-                $input = Read-Host "请输入 $k (当前: $($currentDefaults[$k]))"
-                $modified[$k] = if ([string]::IsNullOrWhiteSpace($input)) { $currentDefaults[$k] } else { $input }
-            }
-            $FinalParamsMap[$item.Name][$item.Mode] = $modified
-        } else {
-            $FinalParamsMap[$item.Name][$item.Mode] = $currentDefaults
-        }
-    }
-
-    return $FinalParamsMap
-}
 
 function Invoke-ParameterInteraction {
     param(
@@ -254,8 +164,9 @@ function Invoke-ParameterInteraction {
     }
 
     # --- 逻辑 B: 视觉增强预览区 ---
-    Write-Host "`n  TOOLS & ARGUMENTS PREVIEW" -ForegroundColor Cyan
-    Write-Host ("  " + ("─" * 52)) -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host " TOOLCHAIN PREVIEW" -ForegroundColor Cyan
+    Write-Host " ─────────────────" -ForegroundColor DarkGray 
 
     foreach ($item in $ToolList) {
         $icon = if ($item.Category -eq "video") { "🎬" } else { "📸" }
@@ -576,7 +487,6 @@ function Convert-FilesToTasks {
             EnableParallel = $taskEnableParallel
         })
     }
-    & $spinner "Done" -Finalize
     return $tasks
 }
 

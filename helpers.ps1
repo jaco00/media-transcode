@@ -109,11 +109,11 @@ function New-ConsoleSpinner {
 
         $script:count++
 
-        if (
-            $Finalize -or
-            $script:count % $SamplingRate -eq 0 -or
-            ($Total -gt 0 -and $script:count -eq $Total)
-        ) {
+        if ($Total -gt 0 -and $script:count -eq $Total) {
+            $Finalize=$true
+        }
+
+        if ( $Finalize -or $script:count % $SamplingRate -eq 0 ) {
             $char = $spinnerChars[$spinnerIndex % $spinnerChars.Count]
             $spinnerIndex++
 
@@ -125,10 +125,9 @@ function New-ConsoleSpinner {
                 $text = "$Title $char [$script:count] $Describe"
             }
             Write-Host -NoNewline "$esc[2K$esc[G$text"
-
-            if ($Finalize) {
-                Write-Host ""
-            }
+        }
+        if ($Finalize) {
+            Write-Host ""
         }
     }.GetNewClosure()
 }

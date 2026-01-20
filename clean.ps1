@@ -13,12 +13,13 @@ if (-not (Test-Path -LiteralPath $SourcePath)) {
     exit 1
 }
 
-$Dir = (Resolve-Path -LiteralPath $SourcePath).Path
+$SourcePath = (Resolve-Path -LiteralPath $SourcePath).Path
+Write-Host "🔍 扫描目录: $SourcePath" -ForegroundColor Green
 
 # 备份目录处理
 if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
     $Mode = 1
-    Write-Host "🔹 清理模式：清理所有已经转换过的源文件" -ForegroundColor Cyan
+    Write-Host "🗑️ 清理模式：清理所有已经转换过的源文件" -ForegroundColor Cyan
 }
 else {
     $Mode = 0
@@ -32,50 +33,56 @@ else {
         Write-Host "❌ 错误：备份目录不存在 -> $BackupRoot" -ForegroundColor Red
         exit 1
     }
-    Write-Host "🔹 备份模式: 将所有已转换的文件备份到指定目录" -ForegroundColor Cyan
-    Write-Host "📦 目标备份目录: $BackupRoot" -ForegroundColor Green
+    Write-Host "💾 备份模式: 将所有已转换的文件备份到指定目录" -ForegroundColor Cyan
+    Write-Host "📁 目标备份目录: $BackupRoot" -ForegroundColor Green
 }
 
-# 文件扩展名配置
-$imageSrcExt = @(".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+. "$PSScriptRoot\helpers.ps1"
+. "$PSScriptRoot\tools-cfg.ps1"
+
+$Supported = Get-SupportedExtensions
+$videoSrcExt = $Supported.video
+$imageSrcExt = $Supported.image
+
 $imageDstExt = ".avif"
-
-$videoSrcExt = @(".mp4", ".mkv", ".avi", ".wmv", ".mov", ".flv")
-$videoDstSuffix = ".h265.mp4"
-$videoDstExt = $videoDstSuffix.ToLowerInvariant() # 统一使用小写后缀进行查找
-
-Write-Host ""
-Write-Host "====================== 扫描配置 ======================" -ForegroundColor Yellow
-Write-Host "  扫描目录: $SourcePath" -ForegroundColor Cyan
-Write-Host "  扫描模式: 递归扫描所有子目录" -ForegroundColor Cyan
-Write-Host "======================================================" -ForegroundColor Yellow
-Write-Host ""
+$videoDstExt = ".h265.mp4"
 
 # 扫描文件
-Write-Host "正在扫描文件..." -ForegroundColor Cyan
-
-# 快速获取所有文件对象
-$allFiles = Get-ChildItem -Path $SourcePath -Recurse -File
-
-# 建立索引：按目录+基名分组 (此步骤已是高效的)
+#$allFiles = [System.Collections.Generic.List[object]]::new()
 $filesByDirAndBase = @{}
-foreach ($f in $allFiles) {
-    # 提取基名和扩展名，特殊处理视频目标后缀 .h265.mp4
-    $fExt = $f.Extension.ToLowerInvariant()
-    $fBase = $f.BaseName
-    if ($f.Name.EndsWith($videoDstSuffix, [System.StringComparison]::OrdinalIgnoreCase)) {
+$spinnerScan = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 500
+foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
+    &$spinnerScan $file.FullName
+    $fExt = $file.Extension.ToLowerInvariant()
+    $fBase = $file.BaseName
+    if ($file.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
         $fExt = $videoDstExt
-        $fBase = $f.Name.Substring(0, $f.Name.Length - $videoDstSuffix.Length)
+        $fBase = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
     }
 
-    $key = Join-Path $f.DirectoryName $fBase
-    if (-not $filesByDirAndBase.ContainsKey($key)) { 
-        $filesByDirAndBase[$key] = @{} 
+    $key = Join-Path $file.DirectoryName $fBase
+
+
+    if (-not $filesByDirAndBase.ContainsKey($key)) {
+        $filesByDirAndBase[$key] = [pscustomobject]@{
+            OriginalFile = $null  
+            ConvertedFile = $null # 转换后的文件
+        }
     }
-    $filesByDirAndBase[$key][$fExt] = $f
+
+    $entry = $filesByDirAndBase[$key]
+
+    # 判断是否为转换后的文件
+    if ($file.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $file.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $entry.ConvertedFile = $file
+    }
+    elseif ($fExt -in $imageSrcExt -or $fExt -in $videoSrcExt) {
+        $entry.OriginalFile = $file
+    }
 }
+&$spinnerScan "Done" -Finalize
 
-Write-Host "正在分析文件 (优化后的单次遍历)..." -ForegroundColor Cyan
 
 # 使用 List<T> 替代 += 提升性能
 $imageMatches = [System.Collections.Generic.List[object]]::new()
@@ -92,93 +99,136 @@ $vidDstBytes = 0L
 # ----------------------------------------------------
 # 关键优化区域：单次高效遍历文件组
 # ----------------------------------------------------
-foreach ($group in $filesByDirAndBase.Values) {
+$spinnerTask = New-ConsoleSpinner -Title "正在分析文件" -Total $filesByDirAndBase.Count  -SamplingRate 1000
+foreach ($entry in $filesByDirAndBase.Values) {
     # 查找所有源文件和目标文件
-    $srcImagesInGroup = @()
-    $srcVideosInGroup = @()
-    $dstImage = $null
-    $dstVideo = $null
+    $file = if ($entry.OriginalFile) { $entry.OriginalFile } else { $entry.ConvertedFile }
+    &$spinnerTask $file.FullName
+    if (-not $entry.OriginalFile){
+        continue
+    }
+    $ext = $entry.OriginalFile.Extension.ToLowerInvariant()
 
-    foreach ($ext in $group.Keys) {
-        $file = $group[$ext]
+    if ($entry.ConvertedFile) {
         
-        if ($ext -eq $imageDstExt) {
-            # .avif
-            $dstImage = $file
+        $matchObj = [pscustomobject]@{
+            Src          = $entry.OriginalFile
+            Dst          = $entry.ConvertedFile
+            RelativePath = [System.IO.Path]::GetRelativePath($SourcePath, $entry.OriginalFile.FullName)
         }
-        elseif ($ext -eq $videoDstExt) {
-            # .h265.mp4
-            $dstVideo = $file
+                
+        if ($ext -in $imageSrcExt) {
+            $imageMatches.Add($matchObj)
+            $imgSrcBytes += $entry.OriginalFile.Length
+            $imgDstBytes += $entry.ConvertedFile.Length
         }
-        elseif ($imageSrcExt -contains $ext) {
-            $srcImagesInGroup += $file
+        elseif ($ext -in $videoSrcExt) {
+            $videoMatches.Add($matchObj)
+            $vidSrcBytes += $entry.OriginalFile.Length
+            $vidDstBytes += $entry.ConvertedFile.Length
         }
-        elseif ($videoSrcExt -contains $ext) {
-            $srcVideosInGroup += $file
+    }else{
+        if ($ext -in $imageSrcExt) {
+            $imageUnconverted.Add($entry.OriginalFile)
+        }elseif ($ext -in $videoSrcExt) {
+            Write-Host "$ext  ->       $entry.OriginalFile.FullName" 
+            $videoUnconverted.Add($entry.OriginalFile)
         }
-    }
-
-    # 1. 处理图片匹配 (已转换)
-    if ($dstImage) {
-        # 优化: 找到任意一个匹配的源文件作为待删除对象
-        $src = $srcImagesInGroup | Select-Object -First 1
-        if ($src) {
-            $imageMatches.Add([pscustomobject]@{
-                    Src          = $src
-                    Dst          = $dstImage
-                    RelativePath = $src.FullName.Substring($Dir.Length + 1)
-                })
-            $imgSrcBytes += $src.Length
-            $imgDstBytes += $dstImage.Length
-        }
-    }
-    
-    # 2. 处理视频匹配 (已转换)
-    if ($dstVideo) {
-        # 优化: 找到任意一个匹配的源文件作为待删除对象
-        $src = $srcVideosInGroup | Select-Object -First 1
-        if ($src) {
-            $videoMatches.Add([pscustomobject]@{
-                    Src          = $src
-                    Dst          = $dstVideo
-                    RelativePath = $src.FullName.Substring($Dir.Length + 1)
-                })
-            $vidSrcBytes += $src.Length
-            $vidDstBytes += $dstVideo.Length
-        }
-    }
-
-    # 3. 处理未转换文件 (排除已匹配的源文件，避免重复)
-    # 未转换图片: 如果组内有图片源文件，但没有 .avif 目标
-    if (-not $dstImage) {
-        # 修复：显式转换为 FileInfo 数组
-        $imageUnconverted.AddRange([System.IO.FileInfo[]]$srcImagesInGroup)
-    }
-    
-    # 未转换视频: 如果组内有视频源文件，但没有 .h265.mp4 目标
-    if (-not $dstVideo) {
-        # 修复：显式转换为 FileInfo 数组
-        $videoUnconverted.AddRange([System.IO.FileInfo[]]$srcVideosInGroup)
     }
 }
+# if (-not $dstImage) {
+#     # 修复：显式转换为 FileInfo 数组
+#     $imageUnconverted.AddRange([System.IO.FileInfo[]]$srcImagesInGroup)
+# }
+
+# # 未转换视频: 如果组内有视频源文件，但没有 .h265.mp4 目标
+# if (-not $dstVideo) {
+#     # 修复：显式转换为 FileInfo 数组
+#     $videoUnconverted.AddRange([System.IO.FileInfo[]]$srcVideosInGroup)
+# }
+
+
+
+# foreach ($ext in $group.Keys) {
+#     $file = $group[$ext]
+    
+#     if ($ext -eq $imageDstExt) {
+#         # .avif
+#         $dstImage = $file
+#     }
+#     elseif ($ext -eq $videoDstExt) {
+#         # .h265.mp4
+#         $dstVideo = $file
+#     }
+#     elseif ($imageSrcExt -contains $ext) {
+#         $srcImagesInGroup += $file
+#     }
+#     elseif ($videoSrcExt -contains $ext) {
+#         $srcVideosInGroup += $file
+#     }
+# }
+
+# # 1. 处理图片匹配 (已转换)
+# if ($dstImage) {
+#     # 优化: 找到任意一个匹配的源文件作为待删除对象
+#     $src = $srcImagesInGroup | Select-Object -First 1
+#     if ($src) {
+#         $imageMatches.Add([pscustomobject]@{
+#                 Src          = $src
+#                 Dst          = $dstImage
+#                 #RelativePath = $src.FullName.Substring($Dir.Length + 1)
+#                 RelativePath=[System.IO.Path]::GetRelativePath($SourcePath, $src.FullName)
+#             })
+#         $imgSrcBytes += $src.Length
+#         $imgDstBytes += $dstImage.Length
+#     }
+# }
+
+# # 2. 处理视频匹配 (已转换)
+# if ($dstVideo) {
+#     # 优化: 找到任意一个匹配的源文件作为待删除对象
+#     $src = $srcVideosInGroup | Select-Object -First 1
+#     if ($src) {
+#         $videoMatches.Add([pscustomobject]@{
+#                 Src          = $src
+#                 Dst          = $dstVideo
+#                 RelativePath=[System.IO.Path]::GetRelativePath($SourcePath, $src.FullName)
+#             })
+#         $vidSrcBytes += $src.Length
+#         $vidDstBytes += $dstVideo.Length
+#     }
+# }
+
+# # 3. 处理未转换文件 (排除已匹配的源文件，避免重复)
+# # 未转换图片: 如果组内有图片源文件，但没有 .avif 目标
+# if (-not $dstImage) {
+#     # 修复：显式转换为 FileInfo 数组
+#     $imageUnconverted.AddRange([System.IO.FileInfo[]]$srcImagesInGroup)
+# }
+
+# # 未转换视频: 如果组内有视频源文件，但没有 .h265.mp4 目标
+# if (-not $dstVideo) {
+#     # 修复：显式转换为 FileInfo 数组
+#     $videoUnconverted.AddRange([System.IO.FileInfo[]]$srcVideosInGroup)
+# }
 # ----------------------------------------------------
 
-# 辅助函数：格式化文件大小
-function Format-Size {
-    param([long]$bytes)
-    if ($bytes -ge 1GB) {
-        return "{0:N2} GB" -f ($bytes / 1GB)
-    }
-    elseif ($bytes -ge 1MB) {
-        return "{0:N2} MB" -f ($bytes / 1MB)
-    }
-    elseif ($bytes -ge 1KB) {
-        return "{0:N2} KB" -f ($bytes / 1KB)
-    }
-    else {
-        return "$bytes B"
-    }
-}
+# # 辅助函数：格式化文件大小
+# function Format-Size {
+#     param([long]$bytes)
+#     if ($bytes -ge 1GB) {
+#         return "{0:N2} GB" -f ($bytes / 1GB)
+#     }
+#     elseif ($bytes -ge 1MB) {
+#         return "{0:N2} MB" -f ($bytes / 1MB)
+#     }
+#     elseif ($bytes -ge 1KB) {
+#         return "{0:N2} KB" -f ($bytes / 1KB)
+#     }
+#     else {
+#         return "$bytes B"
+#     }
+# }
 
 # === 统计计算 ===
 # 已转换的文件统计（字节数已在匹配时累加）
@@ -217,10 +267,8 @@ $totalSavedPercent = if ($totalSrcSize -gt 0) {
 }
 else { 0 }
 
-# === 美化输出 ===
-Write-Host ""
-Write-Host "====================== 扫描结果 ======================" -ForegroundColor Yellow
-Write-Host ""
+Write-Host "[ 扫描结果 ]" -ForegroundColor Yellow
+Write-Host ("-" * 40) -ForegroundColor DarkGray
 
 # 图片统计
 Write-Host "📸 图片文件" -ForegroundColor Cyan
