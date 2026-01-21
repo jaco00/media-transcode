@@ -3,10 +3,16 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$SourcePath
+    [string]$SourcePath,
+    [ValidateRange(1,64)]
+    [int]$MaxThreads=2
 )
 . "$PSScriptRoot\helpers.ps1"
 . "$PSScriptRoot\tools-cfg.ps1"
+
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $MaxThreads = 1
+}
 
 $script:CheckerByExt = @{}
 function Initialize-Config {
@@ -77,7 +83,8 @@ function Measure-FileQuality {
     param(
         [Parameter(Mandatory=$true)][string]$SrcFile,
         [Parameter(Mandatory=$true)][string]$DstFile,
-        [Parameter(Mandatory=$true)][PSObject]$Checker
+        [Parameter(Mandatory=$true)][PSObject]$Checker,
+        [Parameter(Mandatory=$true)]$Tools
     )
 
     $result = [PSCustomObject]@{
@@ -93,7 +100,6 @@ function Measure-FileQuality {
         Success      = $false
         FileName     = $SrcFile
     }
-
     try {
         if (-not (Test-Path $SrcFile)) { throw "源文件不存在: $SrcFile" }
         if (-not (Test-Path $DstFile)) { throw "压缩文件不存在: $DstFile" }
@@ -112,9 +118,8 @@ function Measure-FileQuality {
         $subsample = "1"
 
         if ($Checker.category -eq "video_quality") {
-            $ffprobePath = Resolve-ToolExe -ExeName "ffprobe"
-            $realLenText = & $ffprobePath -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "`"$SrcFile`"" 2>$null
-            Write-Host  $realLenText
+            #$ffprobePath = Resolve-ToolExe -ExeName "ffprobe"
+            $realLenText = & $Tools.ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "`"$SrcFile`"" 2>$null
             if ($realLenText -match '^[0-9.]+$') {
                 $realLen = [double]$realLenText
                 if ($realLen -gt 10) {
@@ -125,15 +130,15 @@ function Measure-FileQuality {
                 }
             }
         }
-       Write-Host  $durationLimit
 
         # ----------------------
         # 获取工具可执行路径
         # ----------------------
         $ToolName = $Checker.tool
-        $Tool = $script:ConfigJson.tools.$ToolName
-        $ExeNameForLookup = if ($Tool.path -and $Tool.path -ne "") { $Tool.path } else { $ToolName }
-        $ResolvedPath = if ($ExeNameForLookup -notmatch "[\\/]") { Resolve-ToolExe -ExeName $ExeNameForLookup } else { $ExeNameForLookup }
+        $toolPath = $Tools.$ToolName
+        if (-not $toolPath) {
+             throw "错误: 检测器 [$($Checker.name)] 指定的工具 [$ToolName] 在 Tools 结构体中未定义或路径为空。"
+        }
 
         # ----------------------
         # 参数扁平化与变量替换
@@ -141,7 +146,8 @@ function Measure-FileQuality {
         $flatArgs = @()
         foreach ($paramRow in $Checker.parameters) {
             foreach ($item in $paramRow) {
-                $processed = $item.Replace('$SRC$', "`"$SrcFile`"").Replace('$DST$', "`"$DstFile`"")
+                #$processed = $item.Replace('$SRC$', "`"$SrcFile`"").Replace('$DST$', "`"$DstFile`"")
+                $processed = $item.Replace('$SRC$', "$SrcFile").Replace('$DST$', "$DstFile")
                 $processed = $processed.Replace('$START_TIME$', $startTime).Replace('$DURATION$', $durationLimit).Replace('$SUBSAMPLE$', $subsample)
                 $flatArgs += $processed
             }
@@ -150,18 +156,38 @@ function Measure-FileQuality {
         # ----------------------
         # 执行检测
         # ----------------------
-        $output = & $ResolvedPath $flatArgs 2>&1 | Out-String
+        #Write-Host "DEBUG: 正在执行工具 $toolPath" -ForegroundColor Gray
+        Write-Host "DEBUG: 执行命令: $toolPath $($flatArgs -join ' ')" -ForegroundColor Yellow
+        $output = & $toolPath $flatArgs 2>&1 | Select-Object -Last 20 | Out-String
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -gt 1) {
+            #Write-Warning "工具执行失败 (exit code $exitCode)！"
+            #Write-Warning "`n$output`n"
+            Write-Host ""
+            Write-Host "$icon ⚠ 工具执行失败: $srcName" -ForegroundColor Red
+            Write-Host ("  ExitCode: " + $exitCode) -ForegroundColor Yellow
+            Write-Host "  命令输出:" -ForegroundColor Cyan
+            $output.Split("`n") | ForEach-Object {
+                Write-Host ("    " + $_) -ForegroundColor DarkGray
+            }
+            Write-Host ""
+        }
+         
+        #Write-Host "DEBUG: 正在执行工具 $output" -ForegroundColor Gray
 
         # ----------------------
         # 解析结果
         # ----------------------
+        Write-Host $Checker.result_regex
         if ($output -match $Checker.result_regex) {
             $score = [double]$Matches[1]
             $result.QualityValue = [math]::Round($score, 3)
             $result.Success = $true
 
             # 查找评分
-            $gradeEntry = $Checker.grading | Sort-Object min -Descending | Where-Object { $score -ge $_.min } | Select-Object -First 1
+            #$gradeEntry = $Checker.grading | Sort-Object min -Descending | Where-Object { $score -ge $_.min } | Select-Object -First 1
+            $gradeEntry = $Checker.grading | Where-Object { $score -ge $_.min -and $score -lt $_.max } | Select-Object -First 1
             if ($gradeEntry) {
                 $result.Grade = $gradeEntry.grade
                 $result.Color = $gradeEntry.color
@@ -224,20 +250,50 @@ function New-Task {
 Initialize-Config "tools.json"
 $checkers = Get-CheckersByExtension ".mp4"
 
-$Src="b.mp4"
-$Dst="bb.mp4"
+# 定义工具路径结构体
+$Tools = [PSCustomObject]@{
+    ffprobe = (Resolve-ToolExe "ffprobe")
+    ffmpeg  = (Resolve-ToolExe "ffmpeg")
+    magick  = (Resolve-ToolExe "magick")
+}
+
+
+$Src = Join-Path $PSScriptRoot "b.mp4"
+$Dst = Join-Path $PSScriptRoot "bb.mp4"
 
 $tasks = @()
 
 $checkers = Get-CheckersByExtension ".mp4"
-$tasks += New-Task -Src "b.mp4" -Dst "bb.mp4" -Type "video" -Checker $checkers[0]
-#$checkers = Get-CheckersByExtension ".jpeg"
-#$tasks += New-Task -Src "a.jpeg" -Dst "a.avif" -Type "image" -Checker $checkers[0]
+#$tasks += New-Task -Src $Src -Dst $Dst -Type "video" -Checker $checkers[0]
+
+$Src = Join-Path $PSScriptRoot "a.jpg"
+$Dst = Join-Path $PSScriptRoot "a.avif"
 
 
-@($tasks) | ForEach-Object {
-    $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker 
-    Show-Result $res
+$checkers = Get-CheckersByExtension ".jpeg"
+$tasks += New-Task -Src $Src -Dst $Dst -Type "image" -Checker $checkers[0]
+
+
+
+if ($MaxThreads -gt 1) {
+    Write-Host "▶ 并行模式 ($MaxThreads threads)" -ForegroundColor Green
+    $funcDefinition = "function Measure-FileQuality { ${function:Measure-FileQuality} }"
+    $tasks | ForEach-Object -Parallel {
+        Invoke-Expression $using:funcDefinition
+        $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker -Tools $using:Tools 
+        $res
+    } -ThrottleLimit $MaxThreads |
+    ForEach-Object {
+        Show-Result $_
+    }
+}
+else {
+    Write-Host "▶ 串行模式" -ForegroundColor White
+
+    @($tasks) | ForEach-Object {
+        $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker -Tools $Tools
+        Show-Result $res
+    }
 }
 
 # if ($checkers -and $checkers.Count -gt 0) {

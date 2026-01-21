@@ -105,10 +105,10 @@
       "metric_name":"VMAF",
       "result_regex": "VMAF score:\\s*([0-9.]+)",
       "grading": [
-        { "min": 90, "grade": "A", "color": "Green" },
-        { "min": 75, "grade": "B", "color": "Cyan" },
-        { "min": 50, "grade": "C", "color": "Yellow" },
-        { "min": 0,  "grade": "D", "color": "Red" }
+        { "min": 90, "max": 100, "grade": "A", "color": "Green" },
+        { "min": 75, "max": 90,  "grade": "B", "color": "Cyan" },
+        { "min": 50, "max": 75,  "grade": "C", "color": "Yellow" },
+        { "min": 0,  "max": 50,  "grade": "D", "color": "Red" }
       ],
       "parameters": [
         ["-hide_banner"],
@@ -126,11 +126,11 @@
       "category": "image_quality",
       "format": [".jpg", ".jpeg", ".png", ".webp"],
       "metric_name":"SSIM",
-      "result_regex": "SSIM[^0-9]*([0-9.]+)",
+      "result_regex": "[0-9.]+\\s+\\(([0-9.]+)\\)",
       "grading": [
-        { "min": 0.98, "grade": "A", "color": "Green" },
-        { "min": 0.90, "grade": "B", "color": "Yellow" },
-        { "min": 0.00, "grade": "D", "color": "Red" }
+        { "min": 0.00, "max": 0.02, "grade": "A", "color": "Green" },
+        { "min": 0.02, "max": 0.05, "grade": "B", "color": "Yellow" },
+        { "min": 0.05, "max": 1.00, "grade": "D", "color": "Red" }
       ],
       "parameters": [
         ["compare", "-metric", "SSIM", "$SRC$", "$DST$", "null:"]

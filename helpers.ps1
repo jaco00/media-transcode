@@ -53,8 +53,8 @@ function Write-CompressionStatus {
     $barEmpty = "░" * ($progressBarLength - $filledLength)
     $barColor = if ($percent -lt 10) { "Red" } else { "Green" }
 
-    $srcStr = Format-Size $SrcBytes
-    $newStr = Format-Size $NewBytes
+    $srcStr = "{0,9}" -f (Format-Size $SrcBytes)
+    $newStr = "{0,9}" -f (Format-Size $NewBytes)
 
     $icon = Get-FileIcon $File
 
@@ -68,7 +68,7 @@ function Write-CompressionStatus {
     $percentDisplay = "[{0,6}]" -f $percentStr
     Write-Host $percentDisplay -ForegroundColor $percentColor -NoNewline
     if ($ElapsedSeconds -gt 0) {
-        $elapsedStr = "[{0:N2}s]" -f $ElapsedSeconds
+        $elapsedStr = "[{0,6:N1}s]" -f $ElapsedSeconds
         Write-Host " $elapsedStr" -NoNewline -ForegroundColor DarkYellow
     }
     Write-Host " $srcStr → $newStr | $File" -ForegroundColor White
