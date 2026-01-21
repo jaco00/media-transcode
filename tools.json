@@ -95,5 +95,46 @@
         }
       }
     }
-  }
+  },
+  "checker": [
+    {
+      "tool": "ffmpeg",
+      "name": "vmaf_checker",
+      "category": "video_quality",
+      "format": [".mp4", ".mov", ".mkv", ".avi"],
+      "metric_name":"VMAF",
+      "result_regex": "VMAF score:\\s*([0-9.]+)",
+      "grading": [
+        { "min": 90, "grade": "A", "color": "Green" },
+        { "min": 75, "grade": "B", "color": "Cyan" },
+        { "min": 50, "grade": "C", "color": "Yellow" },
+        { "min": 0,  "grade": "D", "color": "Red" }
+      ],
+      "parameters": [
+        ["-hide_banner"],
+        ["-loglevel", "info"],
+        ["-ss", "$START_TIME$","-t","$DURATION$","-i", "$SRC$"],
+        ["-ss", "$START_TIME$", "-t","$DURATION$","-i", "$DST$"],
+        ["-lavfi", "libvmaf=model='path=bin/vmaf.json':n_subsample=$SUBSAMPLE$"],
+        ["-f", "null", "-"]
+      ]
+    },
+
+    {
+      "tool": "magick",
+      "name": "ssim_checker",
+      "category": "image_quality",
+      "format": [".jpg", ".jpeg", ".png", ".webp"],
+      "metric_name":"SSIM",
+      "result_regex": "SSIM[^0-9]*([0-9.]+)",
+      "grading": [
+        { "min": 0.98, "grade": "A", "color": "Green" },
+        { "min": 0.90, "grade": "B", "color": "Yellow" },
+        { "min": 0.00, "grade": "D", "color": "Red" }
+      ],
+      "parameters": [
+        ["compare", "-metric", "SSIM", "$SRC$", "$DST$", "null:"]
+      ]
+    }
+  ]
 }

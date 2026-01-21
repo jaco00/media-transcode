@@ -3,9 +3,260 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$SourcePath,
-    [string]$BackupDirName = "" # 备份目录
+    [string]$SourcePath
 )
+. "$PSScriptRoot\helpers.ps1"
+. "$PSScriptRoot\tools-cfg.ps1"
+
+$script:CheckerByExt = @{}
+function Initialize-Config {
+    param([string]$ConfigName)
+
+    $ScriptDir = $PSScriptRoot
+    if (-not $ScriptDir) { $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+
+    $configPath = Join-Path $scriptDir $ConfigName
+
+    if (-not (Test-Path $configPath)) {
+        throw "配置文件不存在: $configPath"
+    }
+     # 读取 JSON
+    $jsonText = Get-Content $configPath -Raw -Encoding UTF8
+
+    try {
+        $config = ConvertFrom-Json $jsonText
+        if ($null -eq $config.checker) {
+            Write-Host "❌ 警告: checker 属性确实是空的！" -ForegroundColor Red
+        }
+    } catch {
+        throw "❌ JSON 解析失败: $_"
+    }
+
+    # 建立扩展名映射
+    $map = @{}
+    foreach ($checker in $config.checker) {
+        Write-Host  "check>> $checker"
+        foreach ($fmt in $checker.format) {
+            $ext = $fmt.ToLower()
+            Write-Host  "check>> $ext"
+            if (-not $map.ContainsKey($ext)) {
+                $map[$ext] = @()
+            }
+            $map[$ext] += $checker
+        }
+    }
+    Write-Host "✅ 配置初始化完成，共 $($config.checker.Count) 个 checker"
+    foreach ($c in $config.checker) {
+        $formats = $c.format -join ", "
+        Write-Host "  Checker: $($c.name), Metric: $($c.metric_name), Formats: $formats" -ForegroundColor Green
+    }
+    $script:CheckerByExt=$map
+}
+
+function Get-CheckersByExtension {
+    param([string]$Extension)
+    if (-not $Extension) {
+        return @()
+    }
+    # 标准化扩展名，保证带点，且小写
+    $ext = $Extension.ToLower()
+    if (-not $ext.StartsWith(".")) {
+        $ext = "." + $ext
+    }
+    # 查表，如果找不到返回空数组
+    Write-Host  "check $ext  $script:CheckerByExt"
+    Write-Host "CheckerByExt keys: $($script:CheckerByExt.Keys -join ', ')"
+    if ($script:CheckerByExt.ContainsKey($ext)) {
+    Write-Host "CheckerByExt keys: $($script:CheckerByExt.Keys -join ', ')"
+        return ,$script:CheckerByExt[$ext]
+    }
+    return @()
+}
+
+function Measure-FileQuality {
+    param(
+        [Parameter(Mandatory=$true)][string]$SrcFile,
+        [Parameter(Mandatory=$true)][string]$DstFile,
+        [Parameter(Mandatory=$true)][PSObject]$Checker
+    )
+
+    $result = [PSCustomObject]@{
+        SrcFile      = $SrcFile
+        DstFile      = $DstFile
+        SrcSize      = 0
+        DstSize      = 0
+        CheckerName  = $Checker.name
+        QualityValue = 0
+        Grade        = "F"
+        Color        = "Gray"
+        Metric       = $Checker.metric_name
+        Success      = $false
+        FileName     = $SrcFile
+    }
+
+    try {
+        if (-not (Test-Path $SrcFile)) { throw "源文件不存在: $SrcFile" }
+        if (-not (Test-Path $DstFile)) { throw "压缩文件不存在: $DstFile" }
+
+        # ----------------------
+        # 获取源/压缩文件大小
+        # ----------------------
+        $result.SrcSize = (Get-Item $SrcFile).Length
+        $result.DstSize = (Get-Item $DstFile).Length
+
+        # ----------------------
+        # 视频参数填充
+        # ----------------------
+        $startTime = "0"
+        $durationLimit = "10"
+        $subsample = "1"
+
+        if ($Checker.category -eq "video_quality") {
+            $ffprobePath = Resolve-ToolExe -ExeName "ffprobe"
+            $realLenText = & $ffprobePath -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "`"$SrcFile`"" 2>$null
+            Write-Host  $realLenText
+            if ($realLenText -match '^[0-9.]+$') {
+                $realLen = [double]$realLenText
+                if ($realLen -gt 10) {
+                    $startTime = "5"
+                    $subsample = "6"
+                } else {
+                    $durationLimit = $realLen.ToString()
+                }
+            }
+        }
+       Write-Host  $durationLimit
+
+        # ----------------------
+        # 获取工具可执行路径
+        # ----------------------
+        $ToolName = $Checker.tool
+        $Tool = $script:ConfigJson.tools.$ToolName
+        $ExeNameForLookup = if ($Tool.path -and $Tool.path -ne "") { $Tool.path } else { $ToolName }
+        $ResolvedPath = if ($ExeNameForLookup -notmatch "[\\/]") { Resolve-ToolExe -ExeName $ExeNameForLookup } else { $ExeNameForLookup }
+
+        # ----------------------
+        # 参数扁平化与变量替换
+        # ----------------------
+        $flatArgs = @()
+        foreach ($paramRow in $Checker.parameters) {
+            foreach ($item in $paramRow) {
+                $processed = $item.Replace('$SRC$', "`"$SrcFile`"").Replace('$DST$', "`"$DstFile`"")
+                $processed = $processed.Replace('$START_TIME$', $startTime).Replace('$DURATION$', $durationLimit).Replace('$SUBSAMPLE$', $subsample)
+                $flatArgs += $processed
+            }
+        }
+
+        # ----------------------
+        # 执行检测
+        # ----------------------
+        $output = & $ResolvedPath $flatArgs 2>&1 | Out-String
+
+        # ----------------------
+        # 解析结果
+        # ----------------------
+        if ($output -match $Checker.result_regex) {
+            $score = [double]$Matches[1]
+            $result.QualityValue = [math]::Round($score, 3)
+            $result.Success = $true
+
+            # 查找评分
+            $gradeEntry = $Checker.grading | Sort-Object min -Descending | Where-Object { $score -ge $_.min } | Select-Object -First 1
+            if ($gradeEntry) {
+                $result.Grade = $gradeEntry.grade
+                $result.Color = $gradeEntry.color
+            }
+        }
+
+    } catch {
+        Write-Warning "[$($result.SrcFile)] 检测失败: $($_.Exception.Message)"
+    }
+
+    return $result
+}
+
+function Show-Result {
+    param($r)
+
+    $icon = if ($r.Type -eq "video") { "🎬" } else { "🖼️" }
+
+    # 使用辅助函数格式化文件大小
+    $srcStr = Format-Size $r.SrcSize
+    $dstStr = Format-Size $r.DstSize
+
+    # 压缩率计算
+    $compressRatio = 1 - ($r.DstSize / $r.SrcSize)
+    $ratioPercent = [math]::Round($compressRatio * 100, 1)
+
+    # 压缩率颜色
+    $ratioColor = if ($ratioPercent -lt 0) { "Red" } else { "White" }
+
+    # 对齐宽度
+    $srcStr = $srcStr.PadLeft(8)
+    $dstStr = $dstStr.PadLeft(8)
+    $ratioStr = ("{0,6}%" -f $ratioPercent)
+
+    # 构造输出
+    Write-Host "$icon $srcStr → $dstStr [" -NoNewline
+    Write-Host $ratioStr -ForegroundColor $ratioColor -NoNewline
+    Write-Host "] | $($r.Metric): " -NoNewline
+    Write-Host $r.QualityValue -ForegroundColor $r.Color -NoNewline
+    Write-Host " [$($r.Grade)] | $($r.FileName)"
+}
+function New-Task {
+    param(
+        [string]$Src,
+        [string]$Dst,
+        [string]$Type,   # image / video
+        [object]$Checker
+    )
+
+    [PSCustomObject]@{
+        Src     = $Src
+        Dst     = $Dst
+        Type    = $Type
+        Checker = $Checker
+        Result  = $null
+    }
+}
+
+
+Initialize-Config "tools.json"
+$checkers = Get-CheckersByExtension ".mp4"
+
+$Src="b.mp4"
+$Dst="bb.mp4"
+
+$tasks = @()
+
+$checkers = Get-CheckersByExtension ".mp4"
+$tasks += New-Task -Src "b.mp4" -Dst "bb.mp4" -Type "video" -Checker $checkers[0]
+#$checkers = Get-CheckersByExtension ".jpeg"
+#$tasks += New-Task -Src "a.jpeg" -Dst "a.avif" -Type "image" -Checker $checkers[0]
+
+
+@($tasks) | ForEach-Object {
+    $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker 
+    Show-Result $res
+}
+
+# if ($checkers -and $checkers.Count -gt 0) {
+    # $targetChecker = $checkers[0]
+    # 
+    #3. 直接调用，函数内部会自己算 START_TIME 等
+    # $finalResult = Measure-FileQuality -SrcFile $Src -DstFile $Dst -Checker $targetChecker 
+# 
+    #4. 输出结果
+    # if ($finalResult.Success) {
+        # Write-Host ">>> 结果: $($finalResult.FileName)" -ForegroundColor Cyan
+        # Write-Host "分数: $($finalResult.QualityValue) [$($finalResult.Grade)]" -ForegroundColor $finalResult.Color
+    # }
+# } else {
+    # Write-Host "未找到匹配的检测器" -ForegroundColor Red
+# }
+
+
+exit 0
 
 # 解析目录路径
 if (-not (Test-Path -LiteralPath $SourcePath)) {
@@ -173,9 +424,6 @@ $totalSavedPercent = if ($totalSrcSize -gt 0) {
 }
 else { 0 }
 
-Write-Host "[ 扫描结果 ]" -ForegroundColor Yellow
-Write-Host ("-" * 40) -ForegroundColor DarkGray
-
 # 图片统计
 $imageParams = @{
     Title            = "📸 图片文件"
@@ -216,143 +464,158 @@ else {
     exit 0
 }
 
-# === 显示文件列表（前10个） ===
-$allMatches = $imageMatches + $vidMatches
 
-if ($allMatches.Count -le 10) {
-    Write-Host "待删除文件列表:" -ForegroundColor Yellow
-    Write-Host ""
-    $allMatches | ForEach-Object {
-        # 使用 .Extension 属性检查是否是图片或视频源文件
-        Write-Host "  $(if ($imageSrcExt -contains $_.Src.Extension.ToLowerInvariant()) {'📸'} else {'🎬'}) $($_.RelativePath)" -ForegroundColor DarkGray
-    }
-    Write-Host ""
-}
-else {
-    Write-Host "待删除文件列表 (显示前10个):" -ForegroundColor Yellow
-    Write-Host ""
-    $allMatches | Select-Object -First 10 | ForEach-Object {
-        Write-Host "  $(if ($imageSrcExt -contains $_.Src.Extension.ToLowerInvariant()) {'📸'} else {'🎬'}) $($_.RelativePath)" -ForegroundColor DarkGray
-    }
-    Write-Host "  ... 还有 $($allMatches.Count - 10) 个文件" -ForegroundColor DarkGray
-    Write-Host ""
-}
+function DoClean {
+    Write-Host "clean..."
+    $allMatches = $imageMatches + $vidMatches
 
-# === 显示未转换文件列表（前10个） ===
-if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
-    Write-Host "未转换文件列表:" -ForegroundColor Yellow
-    Write-Host ""
-    
-    # 未转换图片
-    if ($imageUnconverted.Count -gt 0) {
-        $imgUnconvertedToShow = $imageUnconverted | Select-Object -First 10
-        $imgUnconvertedToShow | ForEach-Object {
-            $relPath = $_.FullName.Substring($Dir.Length + 1)
-            Write-Host "  📸 $relPath" -ForegroundColor DarkGray
+    if ($allMatches.Count -le 10) {
+        Write-Host "待删除文件列表:" -ForegroundColor Yellow
+        Write-Host ""
+        $allMatches | ForEach-Object {
+            # 使用 .Extension 属性检查是否是图片或视频源文件
+            Write-Host "  $(if ($imageSrcExt -contains $_.Src.Extension.ToLowerInvariant()) {'📸'} else {'🎬'}) $($_.RelativePath)" -ForegroundColor DarkGray
         }
-        if ($imageUnconverted.Count -gt 10) {
-            Write-Host "  ... 还有 $($imageUnconverted.Count - 10) 个未转换图片" -ForegroundColor DarkGray
-        }
-    }
-    
-    # 未转换视频
-    if ($videoUnconverted.Count -gt 0) {
-        $vidUnconvertedToShow = $videoUnconverted | Select-Object -First 10
-        $vidUnconvertedToShow | ForEach-Object {
-            $relPath = $_.FullName.Substring($Dir.Length + 1)
-            Write-Host "  🎬 $relPath" -ForegroundColor DarkGray
-        }
-        if ($videoUnconverted.Count -gt 10) {
-            Write-Host "  ... 还有 $($videoUnconverted.Count - 10) 个未转换视频" -ForegroundColor DarkGray
-        }
-    }
-    Write-Host ""
-}
-
-# === 确认删除 ===
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
-if ($Mode -eq 0) {
-    Write-Host "⚠️ 警告: 即将移动 $($imageMatches.Count + $vidMatches.Count) 个源文件到备份目录" -ForegroundColor Red
-    Write-Host "备份目录: $BackupRoot" -ForegroundColor Yellow
-} else {
-    Write-Host "⚠️ 警告: 即将删除 $($imageMatches.Count + $vidMatches.Count) 个源文件" -ForegroundColor Red
-}
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
-Write-Host ""
-
-$confirm = $null
-do {
-    $response = Read-Host "是否清理所有已压缩的源文件？(y/n)"
-
-    if ($response -match "^[yY]$") {
-        $confirm = $true
-        break
-    }
-    elseif ($response -match "^[nN]$") {
-        $confirm = $false
-        break
+        Write-Host ""
     }
     else {
-        Write-Host "输入无效，请输入 y 或 n" -ForegroundColor Red
+        Write-Host "待删除文件列表 (显示前10个):" -ForegroundColor Yellow
+        Write-Host ""
+        $allMatches | Select-Object -First 10 | ForEach-Object {
+            Write-Host "  $(if ($imageSrcExt -contains $_.Src.Extension.ToLowerInvariant()) {'📸'} else {'🎬'}) $($_.RelativePath)" -ForegroundColor DarkGray
+        }
+        Write-Host "  ... 还有 $($allMatches.Count - 10) 个文件" -ForegroundColor DarkGray
+        Write-Host ""
     }
-} while ($true)
 
-if (-not $confirm) {
-    Write-Host ""
-    Write-Host "已取消，不做任何删除。" -ForegroundColor Yellow
-    exit 0
-}
-
-# === 执行删除 ===
-Write-Host ""
-if ($Mode -eq 0) {
-    Write-Host "正在移动文件到备份目录..." -ForegroundColor Cyan
-} else {
-    Write-Host "正在删除文件..." -ForegroundColor Cyan
-}
-
-$deletedCount = 0
-$errorCount = 0
-
-$allMatches | ForEach-Object {
-    try {
-        if ($Mode -eq 0) {
-            # 备份模式：移动到备份目录，保持相同的相对路径
-            $backupPath = Join-Path $BackupRoot $_.RelativePath
-            $backupDir = Split-Path $backupPath -Parent
-
-            # 确保目标目录存在
-            if (-not (Test-Path $backupDir)) {
-                New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    # === 显示未转换文件列表（前10个） ===
+    if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
+        Write-Host "未转换文件列表:" -ForegroundColor Yellow
+        Write-Host ""
+        
+        # 未转换图片
+        if ($imageUnconverted.Count -gt 0) {
+            $imgUnconvertedToShow = $imageUnconverted | Select-Object -First 10
+            $imgUnconvertedToShow | ForEach-Object {
+                $relPath = $_.FullName.Substring($Dir.Length + 1)
+                Write-Host "  📸 $relPath" -ForegroundColor DarkGray
             }
+            if ($imageUnconverted.Count -gt 10) {
+                Write-Host "  ... 还有 $($imageUnconverted.Count - 10) 个未转换图片" -ForegroundColor DarkGray
+            }
+        }
+        
+        # 未转换视频
+        if ($videoUnconverted.Count -gt 0) {
+            $vidUnconvertedToShow = $videoUnconverted | Select-Object -First 10
+            $vidUnconvertedToShow | ForEach-Object {
+                $relPath = $_.FullName.Substring($Dir.Length + 1)
+                Write-Host "  🎬 $relPath" -ForegroundColor DarkGray
+            }
+            if ($videoUnconverted.Count -gt 10) {
+                Write-Host "  ... 还有 $($videoUnconverted.Count - 10) 个未转换视频" -ForegroundColor DarkGray
+            }
+        }
+        Write-Host ""
+    }
 
-            # 移动文件
-            Move-Item -LiteralPath $_.Src.FullName -Destination $backupPath -Force
-            $deletedCount++
-        } else {
-            # 删除模式：直接删除
-            Remove-Item -LiteralPath $_.Src.FullName -Force -ErrorAction Stop
-            $deletedCount++
+    # === 确认删除 ===
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
+    if ($Mode -eq 0) {
+        Write-Host "⚠️ 警告: 即将移动 $($imageMatches.Count + $vidMatches.Count) 个源文件到备份目录" -ForegroundColor Red
+        Write-Host "备份目录: $BackupRoot" -ForegroundColor Yellow
+    } else {
+        Write-Host "⚠️ 警告: 即将删除 $($imageMatches.Count + $vidMatches.Count) 个源文件" -ForegroundColor Red
+    }
+    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
+    Write-Host ""
+
+    $confirm = $null
+    do {
+        $response = Read-Host "是否清理所有已压缩的源文件？(y/n)"
+
+        if ($response -match "^[yY]$") {
+            $confirm = $true
+            break
+        }
+        elseif ($response -match "^[nN]$") {
+            $confirm = $false
+            break
+        }
+        else {
+            Write-Host "输入无效，请输入 y 或 n" -ForegroundColor Red
+        }
+    } while ($true)
+
+    if (-not $confirm) {
+        Write-Host ""
+        Write-Host "已取消，不做任何删除。" -ForegroundColor Yellow
+        exit 0
+    }
+
+    # === 执行删除 ===
+    Write-Host ""
+    if ($Mode -eq 0) {
+        Write-Host "正在移动文件到备份目录..." -ForegroundColor Cyan
+    } else {
+        Write-Host "正在删除文件..." -ForegroundColor Cyan
+    }
+
+    $deletedCount = 0
+    $errorCount = 0
+
+    $allMatches | ForEach-Object {
+        try {
+            if ($Mode -eq 0) {
+                # 备份模式：移动到备份目录，保持相同的相对路径
+                $backupPath = Join-Path $BackupRoot $_.RelativePath
+                $backupDir = Split-Path $backupPath -Parent
+
+                # 确保目标目录存在
+                if (-not (Test-Path $backupDir)) {
+                    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+                }
+
+                # 移动文件
+                Move-Item -LiteralPath $_.Src.FullName -Destination $backupPath -Force
+                $deletedCount++
+            } else {
+                # 删除模式：直接删除
+                Remove-Item -LiteralPath $_.Src.FullName -Force -ErrorAction Stop
+                $deletedCount++
+            }
+        }
+        catch {
+            Write-Host "  ✖ 操作失败: $($_.RelativePath) - $($_.Exception.Message)" -ForegroundColor Red
+            $errorCount++
         }
     }
-    catch {
-        Write-Host "  ✖ 操作失败: $($_.RelativePath) - $($_.Exception.Message)" -ForegroundColor Red
-        $errorCount++
+
+    # === 完成报告 ===
+    Write-Host ""
+    if ($Mode -eq 0) {
+        Write-Host "====================== 移动完成 ======================" -ForegroundColor Yellow
+        Write-Host "  ✅ 成功移动: $deletedCount 个文件到备份目录" -ForegroundColor Green
+    } else {
+        Write-Host "====================== 删除完成 ======================" -ForegroundColor Yellow
+        Write-Host "  ✅ 成功删除: $deletedCount 个文件" -ForegroundColor Green
     }
+    if ($errorCount -gt 0) {
+        Write-Host "  ❌ 操作失败: $errorCount 个文件" -ForegroundColor Red
+    }
+    Write-Host "  💾 释放空间: $(Format-Size $totalSrcSize)" -ForegroundColor Cyan
+    Write-Host "======================================================" -ForegroundColor Yellow
+    Write-Host ""
 }
 
-# === 完成报告 ===
-Write-Host ""
-if ($Mode -eq 0) {
-    Write-Host "====================== 移动完成 ======================" -ForegroundColor Yellow
-    Write-Host "  ✅ 成功移动: $deletedCount 个文件到备份目录" -ForegroundColor Green
-} else {
-    Write-Host "====================== 删除完成 ======================" -ForegroundColor Yellow
-    Write-Host "  ✅ 成功删除: $deletedCount 个文件" -ForegroundColor Green
+function DoCompare {
+    Write-Host "compare..."
 }
-if ($errorCount -gt 0) {
-    Write-Host "  ❌ 操作失败: $errorCount 个文件" -ForegroundColor Red
+
+if ($Cmd -eq "clean"){
+    DoClean
+}elseif ($Cmd -eq "comp"){
+}else{
+    DoCompare
+    Write-Host "Bad Command" -ForegroundColor Red
 }
-Write-Host "  💾 释放空间: $(Format-Size $totalSrcSize)" -ForegroundColor Cyan
-Write-Host "======================================================" -ForegroundColor Yellow
-Write-Host ""

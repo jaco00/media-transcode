@@ -58,10 +58,12 @@ foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
     if ($file.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
         $fExt = $videoDstExt
         $fBase = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
+    } elseif ($file.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $fExt = $imageDstExt
+        $fBase = $file.Name.Substring(0, $file.Name.Length - $imageDstExt.Length)
     }
 
     $key = Join-Path $file.DirectoryName $fBase
-
 
     if (-not $filesByDirAndBase.ContainsKey($key)) {
         $filesByDirAndBase[$key] = [pscustomobject]@{
@@ -78,7 +80,12 @@ foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
         $entry.ConvertedFile = $file
     }
     elseif ($fExt -in $imageSrcExt -or $fExt -in $videoSrcExt) {
-        $entry.OriginalFile = $file
+        if ($null -ne $entry.OriginalFile) {
+            Write-Host "⚠ 发现同名(basename)文件，无法处理: $($file.FullName)" -ForegroundColor Red
+            $entry.OriginalFile = $null
+        } else {
+            $entry.OriginalFile = $file
+        }
     }
 }
 &$spinnerScan "Done" -Finalize
@@ -88,7 +95,7 @@ foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
 $imageMatches = [System.Collections.Generic.List[object]]::new()
 $vidMatches = [System.Collections.Generic.List[object]]::new()
 $imageUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
-$videoUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+$vidUnconverted = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
 
 # 在匹配时直接累加字节数
 $imgSrcBytes = 0L
@@ -125,7 +132,7 @@ foreach ($entry in $filesByDirAndBase.Values) {
         $matchObj = [pscustomobject]@{
             Src          = $entry.OriginalFile
             Dst          = $entry.ConvertedFile
-            RelativePath = [System.IO.Path]::GetRelativePath($SourcePath, $entry.OriginalFile.FullName)
+            RelativePath = CalcRelativePath $SourcePath $entry.OriginalFile.FullName
         }
                 
         if ($ext -in $imageSrcExt) {
@@ -142,7 +149,7 @@ foreach ($entry in $filesByDirAndBase.Values) {
         if ($ext -in $imageSrcExt) {
             $imageUnconverted.Add($entry.OriginalFile)
         }elseif ($ext -in $videoSrcExt) {
-            $videoUnconverted.Add($entry.OriginalFile)
+            $vidUnconverted.Add($entry.OriginalFile)
         }
     }
 }
@@ -160,8 +167,8 @@ $imgUnconvertedSize = if ($imageUnconverted.Count -gt 0) {
 }
 else { 0 }
 
-$vidUnconvertedSize = if ($videoUnconverted.Count -gt 0) {
-    ($videoUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
+$vidUnconvertedSize = if ($vidUnconverted.Count -gt 0) {
+    ($vidUnconverted | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
 }
 else { 0 }
 
@@ -172,9 +179,6 @@ $totalSavedPercent = if ($totalSrcSize -gt 0) {
     [math]::Round((1 - $totalDstSize / $totalSrcSize) * 100, 1) 
 }
 else { 0 }
-
-Write-Host "[ 扫描结果 ]" -ForegroundColor Yellow
-Write-Host ("-" * 40) -ForegroundColor DarkGray
 
 # 图片统计
 $imageParams = @{
@@ -193,7 +197,7 @@ $vidParams = @{
     Count            = $vidMatches.Count 
     SrcSize          = $vidSrcSize  
     DstSize          = $vidDstSize  # 100MB
-    UnconvertedCount = $videoUnconverted.Count 
+    UnconvertedCount = $vidUnconverted.Count 
     UnconvertedSize  = $vidUnconvertedSize 
     DoneCount     = $vidDstCount 
 }
@@ -212,7 +216,6 @@ if ($imageMatches.Count + $vidMatches.Count -gt 0) {
 }
 else {
     Write-Host "✨ 没有发现可清理的文件。" -ForegroundColor Yellow
-    Write-Host ""
     exit 0
 }
 
@@ -239,7 +242,7 @@ else {
 }
 
 # === 显示未转换文件列表（前10个） ===
-if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
+if ($imageUnconverted.Count -gt 0 -or $vidUnconverted.Count -gt 0) {
     Write-Host "未转换文件列表:" -ForegroundColor Yellow
     Write-Host ""
     
@@ -256,14 +259,14 @@ if ($imageUnconverted.Count -gt 0 -or $videoUnconverted.Count -gt 0) {
     }
     
     # 未转换视频
-    if ($videoUnconverted.Count -gt 0) {
-        $vidUnconvertedToShow = $videoUnconverted | Select-Object -First 10
+    if ($vidUnconverted.Count -gt 0) {
+        $vidUnconvertedToShow = $vidUnconverted | Select-Object -First 10
         $vidUnconvertedToShow | ForEach-Object {
             $relPath = $_.FullName.Substring($Dir.Length + 1)
             Write-Host "  🎬 $relPath" -ForegroundColor DarkGray
         }
-        if ($videoUnconverted.Count -gt 10) {
-            Write-Host "  ... 还有 $($videoUnconverted.Count - 10) 个未转换视频" -ForegroundColor DarkGray
+        if ($vidUnconverted.Count -gt 10) {
+            Write-Host "  ... 还有 $($vidUnconverted.Count - 10) 个未转换视频" -ForegroundColor DarkGray
         }
     }
     Write-Host ""

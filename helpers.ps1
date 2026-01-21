@@ -32,25 +32,26 @@ function Write-CompressionStatus {
     )
 
     # 计算压缩率（小于100表示变小，大于100表示变大）
-    $percent =  ($NewBytes / $SrcBytes * 100)
+    $percent = (($SrcBytes - $NewBytes) / $SrcBytes) * 100
     if ([double]::IsNaN($percent)) {
         $percent = 0
     }
     $percentStr = "{0:N1}%" -f $percent
         
-    
 
     $indexWidth = ($Total).ToString().Length
     $indexStr = $("[{0," + $indexWidth + "}/{1," + $indexWidth + "}]") -f $Index, $Total
 
     # 进度条长度
     $progressBarLength = 10
-    # 如果文件变大，进度条长度应该是 0，否则按压缩比例填充
-    $filledLength = [math]::Round($progressBarLength * [math]::Min([math]::Abs($percent) / 100, 1))
+
+    $fillPercent = [math]::Min([math]::Abs($percent) / 100, 1) 
+    $filledLength = [math]::Round($progressBarLength * $fillPercent)
     
     # 填充进度条
     $barFilled = "█" * $filledLength
     $barEmpty = "░" * ($progressBarLength - $filledLength)
+    $barColor = if ($percent -lt 10) { "Red" } else { "Green" }
 
     $srcStr = Format-Size $SrcBytes
     $newStr = Format-Size $NewBytes
@@ -59,34 +60,18 @@ function Write-CompressionStatus {
 
     # 输出：图标/序号 Cyan，进度条颜色根据压缩或膨胀变化，大小/百分比 Yellow，文件名 Cyan
     Write-Host "$icon $indexStr " -NoNewline -ForegroundColor Cyan
-
-    if ($percent -le 90) {
-        # 压缩后变小，进度条用绿色
-        Write-Host "$barFilled" -NoNewline -ForegroundColor Green
-    } else {
-    
-        Write-Host "$barFilled" -NoNewline -ForegroundColor Red
-    }
+    Write-Host "$barFilled" -NoNewline -ForegroundColor $barColor
     
     Write-Host "$barEmpty" -NoNewline -ForegroundColor DarkGray
 
-    if ($percent -le 100) {
-        $percentDisplay = "[{0,6}]" -f $percentStr
-        Write-Host $percentDisplay -ForegroundColor Green -NoNewline
-        if ($ElapsedSeconds -gt 0) {
-            $elapsedStr = "[{0:N2}s]" -f $ElapsedSeconds
-            Write-Host " $elapsedStr" -NoNewline -ForegroundColor DarkYellow
-        }
-        Write-Host " $srcStr → $newStr | $File" -ForegroundColor White
-    } else {
-        $percentDisplay = "[{0,6}]" -f $percentStr
-        Write-Host $percentDisplay -ForegroundColor Red -NoNewline
-        if ($ElapsedSeconds -gt 0) {
-            $elapsedStr = "[{0:N2}s]" -f $ElapsedSeconds
-            Write-Host " $elapsedStr" -NoNewline -ForegroundColor DarkYellow
-        }
-        Write-Host " $srcStr → $newStr | $File" -ForegroundColor White
+    $percentColor = if ($percent -ge 10) { "Green" } else { "Red" }
+    $percentDisplay = "[{0,6}]" -f $percentStr
+    Write-Host $percentDisplay -ForegroundColor $percentColor -NoNewline
+    if ($ElapsedSeconds -gt 0) {
+        $elapsedStr = "[{0:N2}s]" -f $ElapsedSeconds
+        Write-Host " $elapsedStr" -NoNewline -ForegroundColor DarkYellow
     }
+    Write-Host " $srcStr → $newStr | $File" -ForegroundColor White
 }
 
 function New-ConsoleSpinner {
@@ -150,6 +135,7 @@ function Write-ScanSummary {
     else { 0 }
 
     # 打印子标题
+    Write-Host ""
     Write-Host "$Title" -ForegroundColor Cyan
 
     # --- 处理已压缩部分 ---
@@ -172,5 +158,32 @@ function Write-ScanSummary {
 
     # --- 清理记录 ---
     Write-Host ("  已删除源文件:",$DoneCount) -ForegroundColor DarkGray
-    Write-Host ("-" * 40) -ForegroundColor DarkGray
+}
+
+function CalcRelativePath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RootPath,
+
+        [Parameter(Mandatory)]
+        [string]$FullPath
+    )
+
+    try {
+        # 规范化路径（解决 .. / . / 大小写）
+        $root = (Resolve-Path -LiteralPath $RootPath).Path.TrimEnd('\')
+        $full = (Resolve-Path -LiteralPath $FullPath).Path
+    }
+    catch {
+        Write-Host "路径解析失败：$FullPath" -ForegroundColor Red
+        return $null
+    }
+
+    # 必须是目录边界匹配，防 D:\root 和 D:\root2
+    if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host "路径不在源目录下，无法计算相对路径：$full" -ForegroundColor Red
+        return $null
+    }
+
+    return $full.Substring($root.Length + 1)
 }

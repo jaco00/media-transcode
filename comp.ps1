@@ -32,6 +32,28 @@ if ($total -eq 0) {
 Write-Host ("推荐参考值: PSNR >= {0}, SSIM >= {1}" -f $recommendedPSNR, $recommendedSSIM) -ForegroundColor Green
 Write-Host ("-"*100)
 
+function Get-QualityScore {
+    param(
+        [double]$PSNR,
+        [double]$SSIM
+    )
+    # PSNR 归一化
+    # 20 → 0，45 → 1
+    $pNorm = ($PSNR - 20) / (45 - 20)
+    $pNorm = [math]::Min([math]::Max($pNorm, 0), 1)
+
+    # SSIM 归一化
+    # 0.88 → 0，0.995 → 1
+    $sNorm = ($SSIM - 0.88) / (0.995 - 0.88)
+    $sNorm = [math]::Min([math]::Max($sNorm, 0), 1)
+
+    # 加权计算
+    $score = ($pNorm * 0.3 + $sNorm * 0.7) * 100
+    return [math]::Round($score,1)
+}
+
+
+
 # 遍历文件
 for ($i=0; $i -lt $total; $i++) {
     $file = $files[$i]
@@ -115,8 +137,9 @@ for ($i=0; $i -lt $total; $i++) {
     $indexStr = "[{0,3}/{1}]" -f $index, $total   # 序号右对齐 3位
     $psnrStr = "{0:N6}" -f $psnr
     $ssimStr = "{0:N6}" -f $ssim
+    $score = Get-QualityScore -PSNR $psnr -SSIM $ssim
     Write-Host -NoNewline $indexStr
-    Write-Host -NoNewline (" PSNR={0,-10} SSIM={1,-8}" -f $psnrStr, $ssimStr) -ForegroundColor $color
+    Write-Host -NoNewline (" PSNR={0,-10} SSIM={1,-8} Score $score" -f $psnrStr, $ssimStr) -ForegroundColor $color
     Write-Host (" $($file.Name)")
 }
 
