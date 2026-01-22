@@ -2,6 +2,7 @@
   "ReservedCores": 2,
   "ImageOutputExt": ".avif",
   "VideoOutputExt": ".h265.mp4",
+  "SkipExt": ".skip",
   "tools": {
     "avifenc": {
       "path": "",

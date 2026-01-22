@@ -44,8 +44,35 @@ $Supported = Get-SupportedExtensions
 $videoSrcExt = $Supported.video
 $imageSrcExt = $Supported.image
 
-$imageDstExt = ".avif"
-$videoDstExt = ".h265.mp4"
+$configFile = Join-Path $PSScriptRoot "tools.json"
+
+if (-Not (Test-Path $configFile)) {
+    Write-Host "配置文件不存在: $configFile" -ForegroundColor Red
+    exit 1
+}
+
+
+try {
+    $configData = Get-Content $configFile -Raw | ConvertFrom-Json
+    $imageDstExt = $configData.ImageOutputExt 
+    $videoDstExt = $configData.VideoOutputExt 
+} catch {
+    Write-Host "读取 tools.json 失败" -ForegroundColor Red
+    exit 1
+}
+
+if (-Not ($configData.PSObject.Properties.Name -contains "ImageOutputExt")) {
+    Write-Host "配置文件缺少 ImageOutputExt" -ForegroundColor Red
+    exit 1
+}
+if (-Not ($configData.PSObject.Properties.Name -contains "VideoOutputExt")) {
+    Write-Host "配置文件缺少 VideoOutputExt" -ForegroundColor Red
+    exit 1
+}
+
+$imageDstExt = $configData.ImageOutputExt
+$videoDstExt = $configData.VideoOutputExt
+
 
 # 扫描文件
 #$allFiles = [System.Collections.Generic.List[object]]::new()

@@ -15,18 +15,42 @@ param(
 # =============================================================
 # 默认预留 2 个核心，防止系统卡死
 $ReservedCores = 2
+
 $configFile = Join-Path $PSScriptRoot "tools.json"
 
-if (Test-Path $configFile) {
-    try {
-        $configData = Get-Content $configFile -Raw | ConvertFrom-Json
-        if ($null -ne $configData.ReservedCores) { 
-            $ReservedCores = [int]$configData.ReservedCores 
-        }
-    } catch {
-        Write-Host "[Warning] 读取 tools.json 失败，使用默认预留核心: $ReservedCores" -ForegroundColor Yellow
-    }
+if (-Not (Test-Path $configFile)) {
+    Write-Host "配置文件不存在: $configFile" -ForegroundColor Red
+    exit 1
 }
+
+try {
+    $configData = Get-Content $configFile -Raw | ConvertFrom-Json
+} catch {
+    Write-Host "[Warning] 读取 tools.json 失败" -ForegroundColor Red
+    exit 1
+}
+
+if ($null -ne $configData.ReservedCores) { 
+    $ReservedCores = [int]$configData.ReservedCores 
+}
+
+if (-Not ($configData.PSObject.Properties.Name -contains "ImageOutputExt")) {
+    Write-Host "配置文件缺少 ImageOutputExt" -ForegroundColor Red
+    exit 1
+}
+if (-Not ($configData.PSObject.Properties.Name -contains "VideoOutputExt")) {
+    Write-Host "配置文件缺少 VideoOutputExt" -ForegroundColor Red
+    exit 1
+}
+if (-Not ($configData.PSObject.Properties.Name -contains "SkipExt")) {
+    Write-Host "配置文件缺少 SkipExt" -ForegroundColor Red
+    exit 1
+}
+
+$ImageDstExt = $configData.ImageOutputExt
+$VideoDstExt = $configData.VideoOutputExt
+$SkipExt     = $configData.SkipExt
+
 
 try {
     # 1. 获取系统总逻辑核心数
@@ -105,7 +129,7 @@ $SkipExisting = $true
 if (-not $PSBoundParameters.ContainsKey('BackupDirName')) { 
     Write-Host "对比模式 (转换 → 保留源)" -ForegroundColor Cyan
     if (-not $IsAutoMode) {
-        $SkipExistingResp = Read-Host "对比模式: 是否跳过已存在且非空的目标文件 (h265.mp4/avif)? (Y/N) [默认: Y]"
+        $SkipExistingResp = Read-Host "对比模式: 是否跳过已存在且非空的目标文件? (Y/N) [默认: Y]"
         $SkipExisting = [string]::IsNullOrWhiteSpace($SkipExistingResp) -or $SkipExistingResp -match '^[Yy]'
     }
 }
@@ -186,7 +210,7 @@ $videoFiles = [System.Collections.Generic.List[object]]::new()
 $skipCount = 0    # 手动跳过计数
 
 # 获取所有文件
-$spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 100
+$spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 500
 
 foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     &$spinner $file.FullName
@@ -208,8 +232,9 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     $isVideo = $ext -in $videoExtensions
 
     # 2. 状态判断
-    $isTranscoded = ($name.EndsWith(".h265.mp4") -or $ext -eq ".avif")
-    $isExplicitSkip = ($isImage -or $isVideo) -and $name.EndsWith(".skip" + $ext)
+    $isTranscoded = ($name.EndsWith($VideoDstExt) -or $name.EndsWith($ImageDstExt))
+    $isExplicitSkip = ($isImage -or $isVideo) -and $name.EndsWith(($SkipExt + $ext))
+
 
     # A. 已经转换过的，直接忽略（不在任何统计中）
     if ($isTranscoded) {
@@ -227,13 +252,13 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     # C. 正常分类到待处理列表
     if ($CurrentMode -in [MediaType]::Image, [MediaType]::All -and $isImage) {
         if ($SkipExisting) {
-            $checkPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".avif")
+            $checkPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + $ImageDstExt)
             if ((Test-Path $checkPath) -and (Get-Item $checkPath).Length -gt 0) { continue }
         }
         $imageFiles += $file
     }
     elseif ($CurrentMode -in [MediaType]::Video, [MediaType]::All -and $isVideo) {
-        $videoPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + ".h265.mp4")
+        $videoPath = Join-Path $file.Directory.FullName ([IO.Path]::GetFileNameWithoutExtension($file.Name) + $VideoDstExt)
         # $tmpPath = $videoPath + ".tmp"
 
         # # 清理残留的临时文件 (.h265.mp4.tmp)
