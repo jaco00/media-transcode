@@ -1,147 +1,319 @@
-﻿param(
+﻿# -*- coding: utf-8 -*-
+# clean_optimized.ps1 —— 清理已压缩的源文件（扫描并删除已转换的源文件）
+
+param(
     [Parameter(Mandatory = $true)]
     [string]$SourcePath,
-    [int]$Duration = 20,
-    [ValidateSet("start","middle")]
-    [string]$Mode = "start"
+    [ValidateRange(1,64)]
+    [int]$MaxThreads=2
 )
+. "$PSScriptRoot\helpers.ps1"
+. "$PSScriptRoot\tools-cfg.ps1"
 
-# 解析目录路径
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $MaxThreads = 1
+}
+
+$script:CheckerByExt = @{}
+$ImageOutputExt=""
+$VideoOutputExt=""
+
+function Initialize-Config {
+    param([string]$ConfigName)
+
+    $ScriptDir = $PSScriptRoot
+    if (-not $ScriptDir) { $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+
+    $configPath = Join-Path $scriptDir $ConfigName
+
+    if (-not (Test-Path $configPath)) {
+        throw "配置文件不存在: $configPath"
+    }
+     # 读取 JSON
+    $jsonText = Get-Content $configPath -Raw -Encoding UTF8
+
+    try {
+        $config = ConvertFrom-Json $jsonText
+        $script:ImageOutputExt = $config.ImageOutputExt
+        $script:VideoOutputExt = $config.VideoOutputExt
+        if ($null -eq $config.checker) {
+            Write-Host "❌ 警告: checker 属性确实是空的！" -ForegroundColor Red
+        }
+    } catch {
+        throw "❌ JSON 解析失败: $_"
+    }
+
+    # 建立扩展名映射
+    $map = @{}
+    foreach ($checker in $config.checker) {
+        foreach ($fmt in $checker.format) {
+            $ext = $fmt.ToLower()
+            if (-not $map.ContainsKey($ext)) {
+                $map[$ext] = @()
+            }
+            $map[$ext] += $checker
+        }
+    }
+    Write-Host "配置初始化完成，共 $($config.checker.Count) 个 checker"
+    foreach ($c in $config.checker) {
+        $formats = $c.format -join ", "
+        Write-Host "  📊 $($c.name), Metric: $($c.metric_name), Formats: $formats" -ForegroundColor Green
+    }
+    $script:CheckerByExt=$map
+}
+
+function Get-CheckersByExtension {
+    param([string]$Extension)
+    if (-not $Extension) {
+        return @()
+    }
+    # 标准化扩展名，保证带点，且小写
+    $ext = $Extension.ToLower()
+    if (-not $ext.StartsWith(".")) {
+        $ext = "." + $ext
+    }
+    # 查表，如果找不到返回空数组
+    if ($script:CheckerByExt.ContainsKey($ext)) {
+        return ,$script:CheckerByExt[$ext]
+    }
+    return @()
+}
+
+function Measure-FileQuality {
+    param(
+        [Parameter(Mandatory=$true)][string]$SrcFile,
+        [Parameter(Mandatory=$true)][string]$DstFile,
+        [Parameter(Mandatory=$true)][PSObject]$Checker,
+        [Parameter(Mandatory=$true)]$Tools
+    )
+
+    $result = [PSCustomObject]@{
+        SrcFile      = $SrcFile
+        DstFile      = $DstFile
+        SrcSize      = 0
+        DstSize      = 0
+        CheckerName  = $Checker.name
+        QualityValue = 0
+        Grade        = "F"
+        Color        = "Gray"
+        Metric       = $Checker.metric_name
+        Success      = $false
+        FileName     = $SrcFile
+    }
+    try {
+        if (-not (Test-Path $SrcFile)) { throw "源文件不存在: $SrcFile" }
+        if (-not (Test-Path $DstFile)) { throw "压缩文件不存在: $DstFile" }
+
+        # ----------------------
+        # 获取源/压缩文件大小
+        # ----------------------
+        $result.SrcSize = (Get-Item $SrcFile).Length
+        $result.DstSize = (Get-Item $DstFile).Length
+
+        # ----------------------
+        # 视频参数填充
+        # ----------------------
+        $startTime = "0"
+        $durationLimit = "10"
+        $subsample = "1"
+
+        if ($Checker.category -eq "video_quality") {
+            #$ffprobePath = Resolve-ToolExe -ExeName "ffprobe"
+            $realLenText = & $Tools.ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "`"$SrcFile`"" 2>$null
+            if ($realLenText -match '^[0-9.]+$') {
+                $realLen = [double]$realLenText
+                if ($realLen -gt 10) {
+                    $startTime = "5"
+                    $subsample = "6"
+                } else {
+                    $durationLimit = $realLen.ToString()
+                }
+            }
+        }
+
+        # ----------------------
+        # 获取工具可执行路径
+        # ----------------------
+        $ToolName = $Checker.tool
+        $toolPath = $Tools.$ToolName
+        if (-not $toolPath) {
+             throw "错误: 检测器 [$($Checker.name)] 指定的工具 [$ToolName] 在 Tools 结构体中未定义或路径为空。"
+        }
+
+        # ----------------------
+        # 参数扁平化与变量替换
+        # ----------------------
+        $flatArgs = @()
+        foreach ($paramRow in $Checker.parameters) {
+            foreach ($item in $paramRow) {
+                #$processed = $item.Replace('$SRC$', "`"$SrcFile`"").Replace('$DST$', "`"$DstFile`"")
+                $processed = $item.Replace('$SRC$', "$SrcFile").Replace('$DST$', "$DstFile")
+                $processed = $processed.Replace('$START_TIME$', $startTime).Replace('$DURATION$', $durationLimit).Replace('$SUBSAMPLE$', $subsample)
+                $flatArgs += $processed
+            }
+        }
+
+        # ----------------------
+        # 执行检测
+        # ----------------------
+        #Write-Host "DEBUG: 执行命令: $toolPath $($flatArgs -join ' ')" -ForegroundColor Yellow
+        $output = & $toolPath $flatArgs 2>&1 | Select-Object -Last 20 | Out-String
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -gt 1) {
+            #Write-Warning "工具执行失败 (exit code $exitCode)！"
+            #Write-Warning "`n$output`n"
+            Write-Host ""
+            Write-Host "$icon ⚠ 工具执行失败: $srcName" -ForegroundColor Red
+            Write-Host ("  ExitCode: " + $exitCode) -ForegroundColor Yellow
+            Write-Host "  命令输出:" -ForegroundColor Cyan
+            $output.Split("`n") | ForEach-Object {
+                Write-Host ("    " + $_) -ForegroundColor DarkGray
+            }
+        }
+         
+        # ----------------------
+        # 解析结果
+        # ----------------------
+        if ($output -match $Checker.result_regex) {
+            $score = [double]$Matches[1]
+            $result.QualityValue = [math]::Round($score, 3)
+            $result.Success = $true
+
+            # 查找评分
+            #$gradeEntry = $Checker.grading | Sort-Object min -Descending | Where-Object { $score -ge $_.min } | Select-Object -First 1
+            $gradeEntry = $Checker.grading | Where-Object { $score -ge $_.min -and $score -lt $_.max } | Select-Object -First 1
+            if ($gradeEntry) {
+                $result.Grade = $gradeEntry.grade
+                $result.Color = $gradeEntry.color
+            }
+        }
+
+    } catch {
+        Write-Warning "[$($result.SrcFile)] 检测失败: $($_.Exception.Message)"
+    }
+
+    return $result
+}
+
+function Show-Result {
+    param(
+        $r,
+        [int]$Current,
+        [int]$Total
+    )
+
+    $icon = if ($r.Type -eq "video") { "🎬" } else { "🖼️" }
+
+    $w = $Total.ToString().Length
+    $progress = "[{0}/{1}]" -f $Current.ToString().PadLeft($w), $Total
+
+    # 使用辅助函数格式化文件大小
+    $srcStr = Format-Size $r.SrcSize
+    $dstStr = Format-Size $r.DstSize 
+
+    # 压缩率计算
+    $compressRatio =0
+    if ($r.SrcSize -gt 0){
+        $compressRatio = 1 - ($r.DstSize / $r.SrcSize)
+    }
+    $ratioPercent = [math]::Round($compressRatio * 100, 1)
+
+    # 压缩率颜色
+    $ratioColor = if ($ratioPercent -lt 20) { "Red" } else { "Green" }
+
+    # 对齐宽度
+    $srcStr = $srcStr.PadLeft(8)
+    $dstStr = $dstStr.PadLeft(8)
+    $ratioStr = ("{0,6}%" -f $ratioPercent)
+
+    # 构造输出
+    Write-Host "$icon $progress $srcStr → $dstStr [" -NoNewline
+    Write-Host $ratioStr -ForegroundColor $ratioColor -NoNewline
+    Write-Host "] | $($r.Metric): " -NoNewline
+    $qualityStr = "{0,6:N3}" -f $r.QualityValue
+    Write-Host $qualityStr -ForegroundColor $r.Color -NoNewline
+    Write-Host " [$($r.Grade)] | $($r.FileName)"
+}
+
+
+
 if (-not (Test-Path -LiteralPath $SourcePath)) {
     Write-Host "错误: 目录不存在: $SourcePath" -ForegroundColor Red
     exit 1
 }
 
-$ffmpeg = Join-Path $PSScriptRoot "bin\ffmpeg.exe"
-$ffprobe = Join-Path $PSScriptRoot "bin\ffprobe.exe"
+Initialize-Config "tools.json" 
 
-# 推荐值
-$recommendedPSNR = 30
-$recommendedSSIM = 0.95
-
-# 获取所有待处理文件
-$files = Get-ChildItem $SourcePath -File -Recurse | Where-Object { $_.Name -notmatch "\.h265\.mp4$" }
-$total = $files.Count
-
-if ($total -eq 0) {
-    Write-Host "未找到可处理文件。" -ForegroundColor Yellow
-    return
-}
-
-# 输出推荐值
-Write-Host ("推荐参考值: PSNR >= {0}, SSIM >= {1}" -f $recommendedPSNR, $recommendedSSIM) -ForegroundColor Green
-Write-Host ("-"*100)
-
-function Get-QualityScore {
-    param(
-        [double]$PSNR,
-        [double]$SSIM
-    )
-    # PSNR 归一化
-    # 20 → 0，45 → 1
-    $pNorm = ($PSNR - 20) / (45 - 20)
-    $pNorm = [math]::Min([math]::Max($pNorm, 0), 1)
-
-    # SSIM 归一化
-    # 0.88 → 0，0.995 → 1
-    $sNorm = ($SSIM - 0.88) / (0.995 - 0.88)
-    $sNorm = [math]::Min([math]::Max($sNorm, 0), 1)
-
-    # 加权计算
-    $score = ($pNorm * 0.3 + $sNorm * 0.7) * 100
-    return [math]::Round($score,1)
+$Tools = [PSCustomObject]@{
+    ffprobe = (Resolve-ToolExe "ffprobe")
+    ffmpeg  = (Resolve-ToolExe "ffmpeg")
+    magick  = (Resolve-ToolExe "magick")
 }
 
 
+$tasks = [System.Collections.Generic.List[object]]::new()
+$spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 500
+Get-ChildItem -Path $SourcePath -Recurse -File | ForEach-Object {
+    $srcFile = $_
+    &$spinner $srcFile.FullName
 
-# 遍历文件
-for ($i=0; $i -lt $total; $i++) {
-    $file = $files[$i]
-    $index = $i + 1
-    $base = [IO.Path]::GetFileNameWithoutExtension($file.Name)
-    $encoded = Join-Path $file.DirectoryName "$base.h265.mp4"
+    if ($srcFile.Name.ToLower().EndsWith($ImageOutputExt.ToLower()) -or
+        $srcFile.Name.ToLower().EndsWith($VideoOutputExt.ToLower())) {
+        return
+    }
+    $ext = $srcFile.Extension.ToLower()
 
-    if (!(Test-Path $encoded)) { continue }
+    # 根据扩展名获取对应 checker
+    $checkers = Get-CheckersByExtension $ext
+    if (-not $checkers -or $checkers.Count -eq 0) { return }  # 无对应 checker
 
-    # 计算起始时间
-    $start = 0
-    $actualDuration = $Duration
+    $targetChecker = $checkers[0]
 
-    if ($Mode -eq "middle") {
-        # 尝试从 container 获取总时长（兼容 MKV / MP4 / HEVC）
-        # Write-Host "DEBUG: ffprobe path: '$ffprobe'" -ForegroundColor Yellow
-        # Write-Host "DEBUG: file path: '$($file.FullName)'" -ForegroundColor Yellow
-        # Write-Host "DEBUG: file exists: $(Test-Path $file.FullName)" -ForegroundColor Yellow
-        # Write-Host "DEBUG: encoded path: '$encoded'" -ForegroundColor Yellow
-        # Write-Host "DEBUG: encoded exists: $(Test-Path $encoded)" -ForegroundColor Yellow
-
-        $durStr = & $ffprobe -v error -show_entries format=duration -of csv=p=0 $file.FullName
-        $dur = 0
-
-        # Write-Host "DEBUG: ffprobe output: '$durStr'" -ForegroundColor Yellow
-        # Write-Host "DEBUG: ffprobe exit code: $LASTEXITCODE" -ForegroundColor Yellow
-
-        if ([double]::TryParse($durStr, [ref]$dur)) {
-            # dur 是视频总时长，计算中间开始位置
-            $start = [Math]::Max(0, ($dur / 2) - ($Duration / 2))
-
-            # 实际截取长度，避免视频太短导致超出末尾
-            $actualDuration = [Math]::Min($Duration, $dur - $start)
-            if ($actualDuration -le 0) {
-                Write-Host "⚠ 视频太短，跳过: $($file.Name)" -ForegroundColor Yellow
-                continue
-            }
-        } else {
-            Write-Host "⚠ 无法获取时长，使用开头开始: $($file.Name)" -ForegroundColor Yellow
-            $start = 0
-            $actualDuration = $Duration
-        }
+    # 判断类型和目标文件
+    if ($targetChecker.category -eq "video_quality") {
+        $dstFile = [IO.Path]::ChangeExtension($srcFile.FullName, $VideoOutputExt)
+        $type = "video"
+    } elseif ($targetChecker.category -eq "image_quality") {
+        $dstFile = [IO.Path]::ChangeExtension($srcFile.FullName, $ImageOutputExt)
+        $type = "image"
+    }else{
+        return
     }
 
-    # FFmpeg 参数
-    $args = @(
-        "-hide_banner",
-        "-loglevel", "info",
-        "-nostats",
-        "-ss", "$start",
-        "-t", "$actualDuration",
-        "-i", $file.FullName,
-        "-ss", "$start",
-        "-t", "$actualDuration",
-        "-i", $encoded,
-        "-filter_complex", "[0:v][1:v]psnr;[0:v][1:v]ssim",
-        "-f", "null", "-"
-    )
-
-    # 执行 FFmpeg 并捕获输出
-    $output = & $ffmpeg @args 2>&1
-
-    # 提取 PSNR average
-    $psnrLine = $output | Where-Object { $_ -match "PSNR.*average:" }
-    $psnr = 0
-    if ($psnrLine -match "average:([0-9\.]+)") { $psnr = [double]$matches[1] }
-
-    # 提取 SSIM All
-    $ssimLine = $output | Where-Object { $_ -match "SSIM.*All:" }
-    $ssim = 0
-    if ($ssimLine -match "All:([0-9\.]+)") { $ssim = [double]$matches[1] }
-
-    # 设置颜色：高于推荐值 -> 绿色，低于 -> 红色
-    if ($psnr -ge $recommendedPSNR -and $ssim -ge $recommendedSSIM) {
-        $color = "Green"
-    } else {
-        $color = "Red"
+    # 目标文件存在才生成 task
+    if (Test-Path $dstFile) {
+        $tasks.Add([PSCustomObject]@{
+            Src     = $srcFile.FullName
+            Dst     = $dstFile
+            Type    = $type
+            Checker = $targetChecker
+            Result  = $null
+        })
+    }else{
+        Write-Host "not found $dstFile"
     }
-
-    # 输出序号 + 数值 + 文件名
-    $indexStr = "[{0,3}/{1}]" -f $index, $total   # 序号右对齐 3位
-    $psnrStr = "{0:N6}" -f $psnr
-    $ssimStr = "{0:N6}" -f $ssim
-    $score = Get-QualityScore -PSNR $psnr -SSIM $ssim
-    Write-Host -NoNewline $indexStr
-    Write-Host -NoNewline (" PSNR={0,-10} SSIM={1,-8} Score $score" -f $psnrStr, $ssimStr) -ForegroundColor $color
-    Write-Host (" $($file.Name)")
 }
+&$spinner "Done" -Finalize
+$current=0
+if ($MaxThreads -gt 1) {
+    Write-Host "▶ 并行模式 ($MaxThreads threads)" -ForegroundColor Green
+    $funcDefinition = "function Measure-FileQuality { ${function:Measure-FileQuality} }"
+    $tasks | ForEach-Object -Parallel {
+        Invoke-Expression $using:funcDefinition
+        $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker -Tools $using:Tools 
+        $res
+    } -ThrottleLimit $MaxThreads |
+    ForEach-Object {
+        $current++
+        Show-Result $_ $current $tasks.Count
+    }
+}
+else {
+    Write-Host "▶ 串行模式" -ForegroundColor White
 
-Write-Host ("-"*100)
-Write-Host "全部处理完成。" -ForegroundColor Cyan
+    @($tasks) | ForEach-Object {
+        $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker -Tools $Tools
+        Show-Result $res $current $tasks.Count
+    }
+}

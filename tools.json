@@ -1,5 +1,7 @@
 {
   "ReservedCores": 2,
+  "ImageOutputExt": ".avif",
+  "VideoOutputExt": ".h265.mp4",
   "tools": {
     "avifenc": {
       "path": "",

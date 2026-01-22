@@ -10,6 +10,8 @@ enum MediaType {
     All = 2
 }
 
+. "$PSScriptRoot\helpers.ps1"
+
 # --- 1. 内部函数：加载配置 ---
 function Load-ToolConfig {
     $ConfigName = "tools.json"
@@ -39,64 +41,7 @@ function Load-ToolConfig {
     }
 }
 
-# --- 2. 解析工具路径 ---
-function Resolve-ToolExe {
-    param(
-        [Parameter(Mandatory)]
-        [string]$ExeName
-    )
-
-    if ($ExeName -notmatch "\.exe$") { $ExeName += ".exe" }
-
-
-    # 使用 $PSScriptRoot 获取脚本目录（更可靠）
-    $scriptDir = $PSScriptRoot
-    if (-not $scriptDir) {
-        # 备用方案：从当前脚本路径解析
-        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-        if (-not $scriptDir) {
-            $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-        }
-        if (-not $scriptDir) {
-            $scriptDir = (Get-Location).Path
-        }
-    }
-
-    # bin 目录
-    $binDir = Join-Path $scriptDir "bin"
-    $binExe = Join-Path $binDir $ExeName
-
-     
-    $toolPath = $null
-
-    # 先找 bin
-    if (Test-Path -LiteralPath $binExe) {
-        $toolPath = $binExe
-        #Write-Host "[找到工具] bin 目录: $binExe" -ForegroundColor DarkGreen
-    }
-    # 再找 PATH
-    elseif ($cmd = Get-Command $ExeName -ErrorAction SilentlyContinue) {
-        $toolPath = $cmd.Path
-        #Write-Host "[找到工具] PATH: $toolPath" -ForegroundColor DarkGreen
-    }
-    else {
-        throw "未找到可用的 $ExeName（bin 或 PATH）"
-    }
-
-    # 测试可执行性
-    try {
-        & "$toolPath" -version *> $null
-        Write-Host "[命令测试] $toolPath 可执行 ✅" -ForegroundColor Green
-        return $toolPath
-    }
-    catch {
-        throw "$ExeName 找到路径 $toolPath，但无法运行"
-    }
-}
-
-
-# --- 3. 交互逻辑：参数确认与修改 ---
-
+# ---  交互逻辑：参数确认与修改 ---
 function Invoke-ParameterInteraction {
     param(
         [Parameter(Mandatory = $false)]
