@@ -99,6 +99,7 @@ function Measure-FileQuality {
         Metric       = $Checker.metric_name
         Success      = $false
         FileName     = $SrcFile
+        Ratio        = 0
     }
     try {
         if (-not (Test-Path $SrcFile)) { throw "源文件不存在: $SrcFile" }
@@ -109,6 +110,12 @@ function Measure-FileQuality {
         # ----------------------
         $result.SrcSize = (Get-Item $SrcFile).Length
         $result.DstSize = (Get-Item $DstFile).Length
+        # 压缩率计算
+        $compressRatio =0
+        if ($result.SrcSize -gt 0){
+            $compressRatio = 1 - ($result.DstSize / $result.SrcSize)
+        }
+        $result.Ratio = [math]::Round($compressRatio * 100, 1)
 
         # ----------------------
         # 视频参数填充
@@ -216,20 +223,13 @@ function Show-Result {
     $srcStr = Format-Size $r.SrcSize
     $dstStr = Format-Size $r.DstSize 
 
-    # 压缩率计算
-    $compressRatio =0
-    if ($r.SrcSize -gt 0){
-        $compressRatio = 1 - ($r.DstSize / $r.SrcSize)
-    }
-    $ratioPercent = [math]::Round($compressRatio * 100, 1)
-
     # 压缩率颜色
-    $ratioColor = if ($ratioPercent -lt 20) { "Red" } else { "Green" }
+    $ratioColor = if ($r.Ratio -lt 20) { "Red" } else { "Green" }
 
     # 对齐宽度
     $srcStr = $srcStr.PadLeft(8)
     $dstStr = $dstStr.PadLeft(8)
-    $ratioStr = ("{0,6}%" -f $ratioPercent)
+    $ratioStr = ("{0,6}%" -f $r.Ratio)
 
     # 构造输出
     Write-Host "$icon $progress $srcStr → $dstStr [" -NoNewline
@@ -299,6 +299,7 @@ Get-ChildItem -Path $SourcePath -Recurse -File | ForEach-Object {
     }
 }
 &$spinner "Done" -Finalize
+$tasks = $tasks | Sort-Object Type
 $current=0
 if ($MaxThreads -gt 1) {
     Write-Host "▶ 并行模式 ($MaxThreads threads)" -ForegroundColor Green
@@ -306,6 +307,7 @@ if ($MaxThreads -gt 1) {
     $tasks | ForEach-Object -Parallel {
         Invoke-Expression $using:funcDefinition
         $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker -Tools $using:Tools 
+        $_.Result=$res
         $res
     } -ThrottleLimit $MaxThreads |
     ForEach-Object {
@@ -319,5 +321,27 @@ else {
     @($tasks) | ForEach-Object {
         $res = Measure-FileQuality -SrcFile $_.Src -DstFile $_.Dst -Checker $_.Checker -Tools $Tools
         Show-Result $res $current $tasks.Count
+        $_.Result=$res
     }
 }
+
+Write-Host "`n📊 正在按类型分组并排序结果，请稍候..." -ForegroundColor Cyan
+$tasks |
+    Group-Object Type |
+    ForEach-Object {
+        Write-Host "`n=== TOP10 $($_.Name) ===" -ForegroundColor Cyan
+
+        $_.Group |
+            Sort-Object { $_.Result.QualityValue } |
+            Select-Object -First 10 |
+            ForEach-Object {
+                Write-Host (
+                    "{0,7:F4}  {1,6}%  {2,8} → {3,-8}  {4}" -f
+                    [double]$_.Result.QualityValue,
+                    $_.Result.Ratio,
+                    (Format-Size $_.Result.SrcSize),
+                    (Format-Size $_.Result.DstSize),
+                    $_.Src
+                )
+            }
+    }
