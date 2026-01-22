@@ -159,7 +159,6 @@ function Measure-FileQuality {
         #Write-Host "DEBUG: 执行命令: $toolPath $($flatArgs -join ' ')" -ForegroundColor Yellow
         $output = & $toolPath $flatArgs 2>&1 | Select-Object -Last 20 | Out-String
         $exitCode = $LASTEXITCODE
-
         if ($exitCode -gt 1) {
             #Write-Warning "工具执行失败 (exit code $exitCode)！"
             #Write-Warning "`n$output`n"
@@ -179,6 +178,11 @@ function Measure-FileQuality {
             $score = [double]$Matches[1]
             $result.QualityValue = [math]::Round($score, 3)
             $result.Success = $true
+
+            if (-not [string]::IsNullOrWhiteSpace($Checker.value_transform)) {
+                $expanded = $Checker.value_transform -replace '\bx\b', $result.QualityValue
+                $result.QualityValue = Invoke-Expression $expanded
+            } 
 
             # 查找评分
             #$gradeEntry = $Checker.grading | Sort-Object min -Descending | Where-Object { $score -ge $_.min } | Select-Object -First 1
