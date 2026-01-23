@@ -70,9 +70,26 @@ param(
 . ([System.IO.Path]::Combine($PSScriptRoot, "..", "helpers.ps1"))
 . ([System.IO.Path]::Combine($PSScriptRoot, "..", "tools-cfg.ps1"))
 
+function Resolve-ScriptPath {
+    param([string]$Path)
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    } else {
+        return [System.IO.Path]::GetFullPath(
+            [System.IO.Path]::Combine($PSScriptRoot, $Path)
+        )
+    }
+}
+
 $Supported = Get-SupportedExtensions
 $videoSrcExt = $Supported.video
 $imageSrcExt = $Supported.image
+
+switch ($Mode.ToLower()) {
+    "intersect"   { $Mode = "int" }
+    "subtract"   { $Mode = "sub" }
+}
 
 $configFile = [System.IO.Path]::Combine($PSScriptRoot, "..", "tools.json")
 
@@ -104,6 +121,17 @@ $videoDstExt = $configData.VideoOutputExt
 Write-Host "Video files: $videoDstExt,$videoSrcExt" -ForegroundColor DarkGreen
 Write-Host "Image files: $imageDstExt,$imageSrcExt" -ForegroundColor DarkGreen
 
+$APath = Resolve-ScriptPath $APath
+$BPath = Resolve-ScriptPath $BPath
+$CPath = Resolve-ScriptPath $CPath
+
+if ($CPath.StartsWith($APath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "CPath must NOT be inside APath (will cause infinite recursion)"
+}
+if ($CPath.StartsWith($BPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "CPath must NOT be inside BPath"
+}
+
 
 # ===============================
 # File Equality Interface
@@ -116,41 +144,39 @@ function Test-FileEqual {
 
     # TODO: implement your custom equality logic here
     # Example: files with same relative path are considered equal even if extensions differ
-    return ($FileA.Name -eq $FileB.Name -and $FileA.Length -eq $FileB.Length)
+    return ($null -ne $FileA -and $null -ne $FileB)
 }
 
 # ===============================
 # Generate Key for HashSet
 # ===============================
 function Get-FileKey {
-    param([System.IO.FileInfo]$file)
-     $key="unknown"
-     $filename=$file.FullName.ToLowerInvariant()
-     $ext = $file.Extension.ToLowerInvariant()
-    $conved = $false
-    if ($filename.EndsWith($videoDstExt)) {
-        $baseName = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
-        $key="vid.$($file.DirectoryName)/$baseName"
-        $conved=$true
-    } elseif ($filename.EndsWith($imageDstExt)){
-        $baseName = $file.Name.Substring(0, $file.Name.Length - $imageDstExt.Length)
-        $key="img.$($file.DirectoryName)/$baseName"
-        $conved=$true
-    } elseif ($ext -in $videoSrcExt ) {
-        $key="vid.$($file.DirectoryName)/$($file.BaseName)"
-    } elseif ($ext -in $imageSrcExt){
-        $key="img.$($file.DirectoryName)/$($file.BaseName)"
-    }else{
-        continue
-    }
-    if ($file.Length -le 10){
-        Write-Host "文件太小,跳过:$($file.FullName)" -ForegroundColor Red
-        continue
-    }
+    param(
+        [System.IO.FileInfo]$file,
+        [string]$RootPath  # 用于计算相对路径
+    )
 
-    # Use full name or relative path depending on your scenario
-    # Here we use Name + Length as placeholder
-    return "$($File.Name)|$($File.Length)"
+    $rel = CalcRelativePath -RootPath $RootPath -FullPath $file.FullName
+
+    $filename=$file.FullName.ToLowerInvariant()
+    $ext = $file.Extension.ToLowerInvariant()
+    if ($filename.EndsWith($videoDstExt)) {
+        $relNoExt = $rel.Substring(0, $rel.Length - $videoDstExt.Length)
+        $key="vid.$relNoExt"
+    } elseif ($filename.EndsWith($imageDstExt)){
+        $relNoExt = $rel.Substring(0, $rel.Length - $imageDstExt.Length)
+        $key="img.$relNoExt"
+    } elseif ($ext -in $videoSrcExt ) {
+        $relNoExt = $rel.Substring(0, $rel.Length - $ext.Length)
+        $key="vid.$relNoExt"
+    } elseif ($ext -in $imageSrcExt){
+        $relNoExt = $rel.Substring(0, $rel.Length - $ext.Length)
+        $key="img.$relNoExt"
+    }else{
+        $relNoExt = $rel.Substring(0, $rel.Length - $ext.Length)
+        $key="misc.$relNoExt"
+    }
+    return $key 
 }
 
 # ===============================
@@ -164,9 +190,12 @@ function Invoke-SetOperation {
         [string]$CPath
     )
 
+    Write-Host  "load $APath  $BPath"
     # Get all files recursively
     $AFiles = Get-ChildItem $APath -Recurse -File
     $BFiles = Get-ChildItem $BPath -Recurse -File
+
+    Write-Host "Load $($BFiles.Count) files from $BPath"
 
     # Ensure CPath exists
     if (-not (Test-Path $CPath)) {
@@ -176,8 +205,9 @@ function Invoke-SetOperation {
     # Build hash index for B
     $BIndex = @{}
     foreach ($b in $BFiles) {
-        $key = Get-FileKey $b
+        $key = Get-FileKey $b $BPath
         if (-not $BIndex.ContainsKey($key)) {
+            Write-Host "add:$key -> $($b.FullPath)"
             $BIndex[$key] = $b
         }
     }
@@ -187,23 +217,33 @@ function Invoke-SetOperation {
         $matched = $false
 
         # Look up B index first
-        $key = Get-FileKey $afile
-        if ($BIndex.ContainsKey($key)) {
-            $bfile = $BIndex[$key]
-            # Call Test-FileEqual for final equality check
-            $matched = Test-FileEqual $afile $bfile
-        }
+        $key = Get-FileKey $afile $APath
+        Write-Host "check:$key"
+        $bfile = $BIndex[$key]
+        $matched = Test-FileEqual $afile $bfile
+        Write-Host "match $matched a:$afile b:$bfile"
 
         # Determine whether to move based on Mode
         $shouldMove = switch ($Mode) {
-            "Intersect" { -not $matched }  # A ∩ B: move files not in B
-            "Subtract"  {  $matched }      # A − B: move files found in B
+            "int" { -not $matched }  # A ∩ B: move files not in B
+            "sub"  {  $matched }      # A − B: move files found in B
         }
 
         if ($shouldMove) {
-            $dest = Join-Path $CPath $afile.Name
+            $relativePath = $afile.FullName.Substring($APath.Length).TrimStart('\','/')
+            $dest = Join-Path $CPath $relativePath
+            $destDir = Split-Path $dest -Parent
+            if (-not (Test-Path $destDir)) {
+                New-Item -ItemType Directory -Path $destDir | Out-Null
+            }
+            Write-Host "Moving file: $($afile.FullName) -> $dest" -ForegroundColor Cyan
             Move-Item $afile.FullName $dest -Force
         }
     }
 }
+
+# ===============================
+# Execute Engine
+# ===============================
+Invoke-SetOperation -APath $APath -BPath $BPath -Mode $Mode -CPath $CPath
 

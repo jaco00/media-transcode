@@ -178,10 +178,13 @@ function CalcRelativePath {
         Write-Host "路径解析失败：$FullPath" -ForegroundColor Red
         return $null
     }
+    if ($full -eq $root) {
+        return ""  # 根目录文件的相对路径为空
+    }
 
     # 必须是目录边界匹配，防 D:\root 和 D:\root2
     if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        Write-Host "路径不在源目录下，无法计算相对路径：$full" -ForegroundColor Red
+        Write-Host "路径不在源目录下，无法计算相对路径：[$full], root: [$root]" -ForegroundColor Red
         return $null
     }
 
@@ -244,7 +247,7 @@ function Resolve-ToolExe {
     }
 }
 
-function Parse-ExtFilter {
+function ParseExtFilter {
     param(
         [string]$ExtInput
     )
