@@ -85,12 +85,16 @@ foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
     if ($file.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
         $fExt = $videoDstExt
         $fBase = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
+        $typeKey="video"
     } elseif ($file.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
         $fExt = $imageDstExt
         $fBase = $file.Name.Substring(0, $file.Name.Length - $imageDstExt.Length)
+        $typeKey="image"
     }
 
-    $key = Join-Path $file.DirectoryName $fBase
+    #$key = Join-Path $file.DirectoryName $fBase
+    $key = Join-Path $file.DirectoryName ("$typeKey.$fBase")
+
 
     if (-not $filesByDirAndBase.ContainsKey($key)) {
         $filesByDirAndBase[$key] = [pscustomobject]@{
