@@ -61,11 +61,49 @@ param(
     [Parameter(Mandatory)]
     [string]$BPath,      # Reference / Selected
     [Parameter(Mandatory)]
-    [ValidateSet("Intersect", "Subtract")]
+    [ValidateSet("Intersect","int","Subtract","sub")]
     [string]$Mode,       # Operation mode
     [Parameter(Mandatory)]
     [string]$CPath       # Destination for moved files
 )
+
+. ([System.IO.Path]::Combine($PSScriptRoot, "..", "helpers.ps1"))
+. ([System.IO.Path]::Combine($PSScriptRoot, "..", "tools-cfg.ps1"))
+
+$Supported = Get-SupportedExtensions
+$videoSrcExt = $Supported.video
+$imageSrcExt = $Supported.image
+
+$configFile = [System.IO.Path]::Combine($PSScriptRoot, "..", "tools.json")
+
+if (-Not (Test-Path $configFile)) {
+    Write-Host "配置文件不存在: $configFile" -ForegroundColor Red
+    exit 1
+}
+
+
+try {
+    $configData = Get-Content $configFile -Raw | ConvertFrom-Json
+} catch {
+    Write-Host "读取 tools.json 失败" -ForegroundColor Red
+    exit 1
+}
+
+if (-Not ($configData.PSObject.Properties.Name -contains "ImageOutputExt")) {
+    Write-Host "配置文件缺少 ImageOutputExt" -ForegroundColor Red
+    exit 1
+}
+if (-Not ($configData.PSObject.Properties.Name -contains "VideoOutputExt")) {
+    Write-Host "配置文件缺少 VideoOutputExt" -ForegroundColor Red
+    exit 1
+}
+
+$imageDstExt = $configData.ImageOutputExt
+$videoDstExt = $configData.VideoOutputExt
+
+Write-Host "Video files: $videoDstExt,$videoSrcExt" -ForegroundColor DarkGreen
+Write-Host "Image files: $imageDstExt,$imageSrcExt" -ForegroundColor DarkGreen
+
 
 # ===============================
 # File Equality Interface
@@ -85,7 +123,30 @@ function Test-FileEqual {
 # Generate Key for HashSet
 # ===============================
 function Get-FileKey {
-    param([System.IO.FileInfo]$File)
+    param([System.IO.FileInfo]$file)
+     $key="unknown"
+     $filename=$file.FullName.ToLowerInvariant()
+     $ext = $file.Extension.ToLowerInvariant()
+    $conved = $false
+    if ($filename.EndsWith($videoDstExt)) {
+        $baseName = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
+        $key="vid.$($file.DirectoryName)/$baseName"
+        $conved=$true
+    } elseif ($filename.EndsWith($imageDstExt)){
+        $baseName = $file.Name.Substring(0, $file.Name.Length - $imageDstExt.Length)
+        $key="img.$($file.DirectoryName)/$baseName"
+        $conved=$true
+    } elseif ($ext -in $videoSrcExt ) {
+        $key="vid.$($file.DirectoryName)/$($file.BaseName)"
+    } elseif ($ext -in $imageSrcExt){
+        $key="img.$($file.DirectoryName)/$($file.BaseName)"
+    }else{
+        continue
+    }
+    if ($file.Length -le 10){
+        Write-Host "文件太小,跳过:$($file.FullName)" -ForegroundColor Red
+        continue
+    }
 
     # Use full name or relative path depending on your scenario
     # Here we use Name + Length as placeholder

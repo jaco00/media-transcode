@@ -94,6 +94,7 @@ $MaxThreads = $useCores
 
 # 记录开始时间
 $startTime = Get-Date
+$UserExtFilter = @()
 
 # ---------- 硬件检测 ----------
 $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
@@ -155,14 +156,22 @@ if(!$IsAutoMode) {
     $IncludeDirs = if ([string]::IsNullOrWhiteSpace($InputInclude)) { @() } else { $InputInclude.Split(',').Trim() }
 }
 
+if($Cmd -eq "filter"){
+    $extInput = Read-Host "请输入要处理的文件后缀（如 .jpg,.jpeg，直接回车=不过滤）"
+    if (-not [string]::IsNullOrWhiteSpace($extInput)) {
+        $UserExtFilter = Parse-ExtFilter -ExtInput $extInput
+    }
+}
+
 # 处理类型选择
 
-if ($IsAutoMode) {
+if ($IsAutoMode -or $Cmd -eq "filter") {
     $IncludeDirs = @() # 自动化模式默认扫描所有
     switch ($Cmd) {
         "img"   { [MediaType]$CurrentMode = [MediaType]::Image }
         "video" { [MediaType]$CurrentMode = [MediaType]::Video }
         "all"   { [MediaType]$CurrentMode = [MediaType]::All }
+        "filter"   { [MediaType]$CurrentMode = [MediaType]::All }
     }
 } else {
 
@@ -235,6 +244,9 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     $isTranscoded = ($name.EndsWith($VideoDstExt) -or $name.EndsWith($ImageDstExt))
     $isExplicitSkip = ($isImage -or $isVideo) -and $name.EndsWith(($SkipExt + $ext))
 
+    if ($UserExtFilter.Count -gt 0 -and $ext -notin $UserExtFilter) {
+        continue
+    }
 
     # A. 已经转换过的，直接忽略（不在任何统计中）
     if ($isTranscoded) {
@@ -332,6 +344,9 @@ $configItems = [Ordered]@{
     "扫描范围"         = if ($null -eq $IncludeDirs -or $IncludeDirs.Count -eq 0) { "所有" } else { $IncludeDirs -join ', ' }
     "执行模式"         = if ($parallelEnabled) { "并行模式 ($MaxThreads 线程)" } else { "单线程模式" }
     "输出级别"         = if ($ShowDetails) { "详细输出" } else { "静默模式" }
+}
+if ($UserExtFilter.Count -gt 0) {
+    $configItems["后缀过滤"] = $UserExtFilter -join ', '
 }
 
 # 2. 统一循环输出

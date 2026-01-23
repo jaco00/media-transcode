@@ -243,3 +243,22 @@ function Resolve-ToolExe {
         throw "$ExeName 找到路径 $toolPath，但无法运行"
     }
 }
+
+function Parse-ExtFilter {
+    param(
+        [string]$ExtInput
+    )
+
+    if (-not $ExtInput) { return @() }
+    $rawList = $ExtInput -split '[,|\s]+'
+
+    $UserExtFilter = $rawList | ForEach-Object {
+        $e = $_.Trim().ToLower()
+        if ($e -ne '') {
+            $e = $e.TrimStart('*')
+            if ($e -notmatch '^\.' ) { $e = ".$e" }
+            $e
+        }
+    }
+    return $UserExtFilter | Sort-Object -Unique
+}

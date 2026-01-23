@@ -4,7 +4,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourcePath,
-    [string]$BackupDirName = "" # 备份目录
+    [string]$BackupDirName = "", # 备份目录
+    [string]$ExtFilter = "" 
 )
 
 # 解析目录路径
@@ -15,6 +16,7 @@ if (-not (Test-Path -LiteralPath $SourcePath)) {
 
 $SourcePath = (Resolve-Path -LiteralPath $SourcePath).Path
 Write-Host "🔍 扫描目录: $SourcePath" -ForegroundColor Green
+
 
 # 备份目录处理
 if (-not $PSBoundParameters.ContainsKey('BackupDirName')) {
@@ -54,8 +56,6 @@ if (-Not (Test-Path $configFile)) {
 
 try {
     $configData = Get-Content $configFile -Raw | ConvertFrom-Json
-    $imageDstExt = $configData.ImageOutputExt 
-    $videoDstExt = $configData.VideoOutputExt 
 } catch {
     Write-Host "读取 tools.json 失败" -ForegroundColor Red
     exit 1
@@ -76,25 +76,33 @@ $videoDstExt = $configData.VideoOutputExt
 
 # 扫描文件
 #$allFiles = [System.Collections.Generic.List[object]]::new()
+$UserExtFilter = Parse-ExtFilter -ExtInput $ExtFilter
 $filesByDirAndBase = @{}
 $spinnerScan = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 500
 foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
-    &$spinnerScan $file.FullName
-    $fExt = $file.Extension.ToLowerInvariant()
-    $fBase = $file.BaseName
-    if ($file.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
-        $fExt = $videoDstExt
-        $fBase = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
-        $typeKey="video"
-    } elseif ($file.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
-        $fExt = $imageDstExt
-        $fBase = $file.Name.Substring(0, $file.Name.Length - $imageDstExt.Length)
-        $typeKey="image"
+    $key="unknown"
+    $filename=$file.FullName.ToLowerInvariant()
+    $ext = $file.Extension.ToLowerInvariant()
+    $conved = $false
+    if ($filename.EndsWith($videoDstExt)) {
+        $baseName = $file.Name.Substring(0, $file.Name.Length - $videoDstExt.Length)
+        $key="vid.$($file.DirectoryName)/$baseName"
+        $conved=$true
+    } elseif ($filename.EndsWith($imageDstExt)){
+        $baseName = $file.Name.Substring(0, $file.Name.Length - $imageDstExt.Length)
+        $key="img.$($file.DirectoryName)/$baseName"
+        $conved=$true
+    } elseif ($ext -in $videoSrcExt ) {
+        $key="vid.$($file.DirectoryName)/$($file.BaseName)"
+    } elseif ($ext -in $imageSrcExt){
+        $key="img.$($file.DirectoryName)/$($file.BaseName)"
+    }else{
+        continue
     }
-
-    #$key = Join-Path $file.DirectoryName $fBase
-    $key = Join-Path $file.DirectoryName ("$typeKey.$fBase")
-
+    if ($file.Length -le 10){
+        Write-Host "文件太小,跳过:$($file.FullName)" -ForegroundColor Red
+        continue
+    }
 
     if (-not $filesByDirAndBase.ContainsKey($key)) {
         $filesByDirAndBase[$key] = [pscustomobject]@{
@@ -106,13 +114,14 @@ foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
     $entry = $filesByDirAndBase[$key]
 
     # 判断是否为转换后的文件
-    if ($file.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $file.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if ($conved){
         $entry.ConvertedFile = $file
     }
-    elseif ($fExt -in $imageSrcExt -or $fExt -in $videoSrcExt) {
+    else{
         if ($null -ne $entry.OriginalFile) {
-            Write-Host "⚠ 发现同名(basename)文件，无法处理: $($file.FullName)" -ForegroundColor Red
+            Write-Host "`n⚠ 发现同名(basename)文件，无法处理:$($file.FullName)" -ForegroundColor Red
+            Write-Host $entry.OriginalFile.FullName
+            Write-Host $file.FullName
             $entry.OriginalFile = $null
         } else {
             $entry.OriginalFile = $file
@@ -148,6 +157,12 @@ foreach ($entry in $filesByDirAndBase.Values) {
     if (-not $file){
          continue
     }
+    $ext = $file.Extension.ToLowerInvariant()
+
+    if ($UserExtFilter.Count -gt 0 -and $ext -notin $UserExtFilter) {
+        continue
+    }
+
     if (-not $entry.OriginalFile){
         if ($entry.ConvertedFile.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
             $imgDstCount += 1
@@ -157,7 +172,6 @@ foreach ($entry in $filesByDirAndBase.Values) {
         continue
     }
 
-    $ext = $file.Extension.ToLowerInvariant()
     if ($entry.ConvertedFile) {
         
         $matchObj = [pscustomobject]@{

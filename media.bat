@@ -30,7 +30,7 @@ if %ERRORLEVEL% == 0 (
 :: =============================================================
 
 :: Core compression tasks (zip, all, img, video) call zip.ps1
-for %%a in (zip all img video) do (
+for %%a in (zip all img video filter) do (
     if /i "%CMD%" == "%%a" goto :media_logic
 )
 
@@ -84,12 +84,13 @@ exit /b 1
 echo Usage: media.bat [Command] [srcdir] [dstdir]
 echo.
 echo Commands:
-echo   zip   - Interactive mode for all media (AVIF/H.265)
-echo   all   - Automatic mode for all media (Process all)
-echo   img   - Process images only (AVIF)
-echo   video - Process videos only (H.265)
-echo   comp  - Compare quality between source and compressed files
-echo   clean - Remove source files after compression
+echo   zip    - Interactive mode for all media 
+echo   all    - Automatic mode for all media 
+echo   img    - Process images only 
+echo   video  - Process videos only 
+echo   filter - Process files by ext filter
+echo   comp   - Compare quality between source and compressed files
+echo   clean  - Remove source files after compression
 echo.
 echo Examples:
 echo   media.bat zip "D:\photo" "D:\photo_backup"

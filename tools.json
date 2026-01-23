@@ -16,7 +16,6 @@
       "parameters": [
         ["--speed", "6"],
         ["--jobs", "2"],
-        ["-y", "444"],
         ["-q", "$QUALITY$"],
         ["$IN$", "$OUT$"]
       ]
@@ -28,12 +27,11 @@
       "priority": 20,
       "format": [".jpg", ".jpeg", ".png", ".heic", ".heif"],
       "template_parameters": {
-        "QUALITY": 78
+        "QUALITY": 80 
       },
       "parameters": [
         ["-limit", "thread", "1"],
         ["-quality", "$QUALITY$"],
-        ["-define", "heic:chroma=444"],
         ["$IN$", "avif:$OUT$"]
       ]
     },
@@ -41,7 +39,7 @@
       "path": "",
       "category": "image",
       "enable_parallel": false,
-      "priority": 9,
+      "priority": 99,
       "format": [".heic", ".heif"],
       "template_parameters": {
         "QUALITY": 82
