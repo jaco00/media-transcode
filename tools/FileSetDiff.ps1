@@ -69,7 +69,6 @@ param(
 
 . ([System.IO.Path]::Combine($PSScriptRoot, "..", "helpers.ps1"))
 . ([System.IO.Path]::Combine($PSScriptRoot, "..", "tools-cfg.ps1"))
-
 function Resolve-ScriptPath {
     param([string]$Path)
 
@@ -82,6 +81,9 @@ function Resolve-ScriptPath {
     }
 }
 
+# ===============================
+# Init config Data 
+# ===============================
 $Supported = Get-SupportedExtensions
 $videoSrcExt = $Supported.video
 $imageSrcExt = $Supported.image
@@ -93,30 +95,21 @@ switch ($Mode.ToLower()) {
 
 $configFile = [System.IO.Path]::Combine($PSScriptRoot, "..", "tools.json")
 
-if (-Not (Test-Path $configFile)) {
-    Write-Host "配置文件不存在: $configFile" -ForegroundColor Red
-    exit 1
-}
 
-
-try {
-    $configData = Get-Content $configFile -Raw | ConvertFrom-Json
-} catch {
-    Write-Host "读取 tools.json 失败" -ForegroundColor Red
-    exit 1
-}
-
-if (-Not ($configData.PSObject.Properties.Name -contains "ImageOutputExt")) {
-    Write-Host "配置文件缺少 ImageOutputExt" -ForegroundColor Red
-    exit 1
-}
-if (-Not ($configData.PSObject.Properties.Name -contains "VideoOutputExt")) {
-    Write-Host "配置文件缺少 VideoOutputExt" -ForegroundColor Red
-    exit 1
-}
-
+if (-Not (Test-Path $configFile)) { Write-Error "Config file not found: $configFile"; exit 1 }
+$configData = Get-Content $configFile -Raw | ConvertFrom-Json
 $imageDstExt = $configData.ImageOutputExt
 $videoDstExt = $configData.VideoOutputExt
+
+
+$ExtMap = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+# Populate video extensions
+foreach ($ext in $videoSrcExt) { $ExtMap[$ext] = "vid" }
+
+# Populate image extensions
+foreach ($ext in $imageSrcExt) { $ExtMap[$ext] = "img" }
+
 
 Write-Host "Video files: $videoDstExt,$videoSrcExt" -ForegroundColor DarkGreen
 Write-Host "Image files: $imageDstExt,$imageSrcExt" -ForegroundColor DarkGreen
@@ -131,6 +124,8 @@ if ($CPath.StartsWith($APath, [StringComparison]::OrdinalIgnoreCase)) {
 if ($CPath.StartsWith($BPath, [StringComparison]::OrdinalIgnoreCase)) {
     throw "CPath must NOT be inside BPath"
 }
+
+
 
 
 # ===============================
@@ -150,100 +145,154 @@ function Test-FileEqual {
 # ===============================
 # Generate Key for HashSet
 # ===============================
-function Get-FileKey {
+function Get-FileKey{
     param(
-        [System.IO.FileInfo]$file,
+        [System.IO.FileInfo]$File,
         [string]$RootPath  # 用于计算相对路径
     )
 
-    $rel = CalcRelativePath -RootPath $RootPath -FullPath $file.FullName
+    #$rel = CalcRelativePath -RootPath $RootPath -FullPath $file.FullName
+    $rel = $File.FullName.Substring($RootPath.Length).TrimStart('\','/')
 
-    $filename=$file.FullName.ToLowerInvariant()
+    $filename=$File.FullName.ToLowerInvariant()
     $ext = $file.Extension.ToLowerInvariant()
-    if ($filename.EndsWith($videoDstExt)) {
-        $relNoExt = $rel.Substring(0, $rel.Length - $videoDstExt.Length)
-        $key="vid.$relNoExt"
-    } elseif ($filename.EndsWith($imageDstExt)){
-        $relNoExt = $rel.Substring(0, $rel.Length - $imageDstExt.Length)
-        $key="img.$relNoExt"
-    } elseif ($ext -in $videoSrcExt ) {
-        $relNoExt = $rel.Substring(0, $rel.Length - $ext.Length)
-        $key="vid.$relNoExt"
-    } elseif ($ext -in $imageSrcExt){
-        $relNoExt = $rel.Substring(0, $rel.Length - $ext.Length)
-        $key="img.$relNoExt"
-    }else{
-        $relNoExt = $rel.Substring(0, $rel.Length - $ext.Length)
-        $key="misc.$relNoExt"
+
+    $type = ""
+    if ($File.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $key = "vid." + $rel.Substring(0, $rel.Length - $videoDstExt.Length)
+    } elseif ($File.Name.EndsWith($imageDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $key = "img." + $rel.Substring(0, $rel.Length - $imageDstExt.Length)
+    } elseif ($ExtMap.TryGetValue($ext, [ref]$type)) {
+        $key = "$type." + $rel.Substring(0, $rel.Length - $ext.Length)
+    } else {
+        $key = "misc." + $rel.Substring(0, $rel.Length - $ext.Length)
     }
+
     return $key 
 }
+
 
 # ===============================
 # Core Engine
 # ===============================
-function Invoke-SetOperation {
-    param(
-        [string]$APath,
-        [string]$BPath,
-        [string]$Mode,
-        [string]$CPath
-    )
 
-    Write-Host  "load $APath  $BPath"
-    # Get all files recursively
-    $AFiles = Get-ChildItem $APath -Recurse -File
-    $BFiles = Get-ChildItem $BPath -Recurse -File
+Write-Host "`n[1/4] Scanning file systems..." -ForegroundColor Cyan
+Write-Host  "APath:[$APath]"
+Write-Host  "BPath:[$BPath]"
+# Get all files recursively
+$AFiles = Get-ChildItem $APath -Recurse -File
+$BFiles = Get-ChildItem $BPath -Recurse -File
 
-    Write-Host "Load $($BFiles.Count) files from $BPath"
+Write-Host "Load $($BFiles.Count) files from $BPath"
 
-    # Ensure CPath exists
-    if (-not (Test-Path $CPath)) {
-        New-Item -ItemType Directory -Path $CPath | Out-Null
-    }
-
-    # Build hash index for B
-    $BIndex = @{}
-    foreach ($b in $BFiles) {
-        $key = Get-FileKey $b $BPath
-        if (-not $BIndex.ContainsKey($key)) {
-            Write-Host "add:$key -> $($b.FullPath)"
-            $BIndex[$key] = $b
-        }
-    }
-
-    # Process each file in A
-    foreach ($afile in $AFiles) {
-        $matched = $false
-
-        # Look up B index first
-        $key = Get-FileKey $afile $APath
-        Write-Host "check:$key"
-        $bfile = $BIndex[$key]
-        $matched = Test-FileEqual $afile $bfile
-        Write-Host "match $matched a:$afile b:$bfile"
-
-        # Determine whether to move based on Mode
-        $shouldMove = switch ($Mode) {
-            "int" { -not $matched }  # A ∩ B: move files not in B
-            "sub"  {  $matched }      # A − B: move files found in B
-        }
-
-        if ($shouldMove) {
-            $relativePath = $afile.FullName.Substring($APath.Length).TrimStart('\','/')
-            $dest = Join-Path $CPath $relativePath
-            $destDir = Split-Path $dest -Parent
-            if (-not (Test-Path $destDir)) {
-                New-Item -ItemType Directory -Path $destDir | Out-Null
-            }
-            Write-Host "Moving file: $($afile.FullName) -> $dest" -ForegroundColor Cyan
-            Move-Item $afile.FullName $dest -Force
-        }
-    }
+# Ensure CPath exists
+if (-not (Test-Path $CPath)) {
+    New-Item -ItemType Directory -Path $CPath | Out-Null
 }
 
-# ===============================
-# Execute Engine
-# ===============================
-Invoke-SetOperation -APath $APath -BPath $BPath -Mode $Mode -CPath $CPath
+# Build hash index for B
+Write-Host "[2/4] Building index and calculating set operations..." -ForegroundColor Cyan
+$BIndex = [System.Collections.Generic.Dictionary[string, System.IO.FileInfo]]::new()
+
+$count = 0
+foreach ($b in $BFiles) {
+    $count++
+    if (($count % 200) -eq 0) {
+        Write-Progress -Activity "[2/4] Building B index" -Status "$count/ $($BFiles.Count)" -PercentComplete ($count * 100 / $BFiles.Count)
+    }
+    $key = Get-FileKey $b $BPath $ExtMap
+    if (-not $BIndex.ContainsKey($key)) {
+        $BIndex.Add($key, $b)
+    }
+}
+Write-Progress -Activity "[2/4] Building B index" -Completed
+
+# Process each file in A
+$FilesToMove = New-Object System.Collections.Generic.List[PSCustomObject]
+$count = 0
+foreach ($afile in $AFiles) {
+    $count++
+    if (($count % 200) -eq 0) {
+        $percent = [math]::Round(($count / $AFiles.Count) * 100)
+        Write-Progress -Activity "Analyzing Files" -Status "Checking: $($afile.Name)" -PercentComplete $percent
+    }
+
+    # Look up B index first
+    $key = Get-FileKey $afile $APath $ExtMap
+    $bfile = $BIndex[$key]
+    $matched = Test-FileEqual $afile $bfile
+
+    # Determine whether to move based on Mode
+    $shouldMove = switch ($Mode) {
+        "int" { -not $matched }  # A ∩ B: move files not in B
+        "sub"  {  $matched }      # A − B: move files found in B
+    }
+
+    if ($shouldMove) {
+        $relativePath = $afile.FullName.Substring($APath.Length).TrimStart('\','/')
+        $dest = Join-Path $CPath $relativePath
+        $destDir = Split-Path $dest -Parent
+
+        $FilesToMove.Add([PSCustomObject]@{
+            FileName    = $afile.Name
+            Source      = $afile.FullName
+            Destination = $destDir 
+        })
+
+        # if (-not (Test-Path $destDir)) {
+        #     New-Item -ItemType Directory -Path $destDir | Out-Null
+        # }
+        # Write-Host "Moving file: $($afile.FullName) -> $dest" -ForegroundColor Cyan
+        # Move-Item $afile.FullName $dest -Force
+    }
+}
+Write-Progress -Activity "Analyzing Files" -Completed
+
+# --- Step 3: Preview & Confirmation ---
+Write-Host ("`n" + ("═" * 70)) -ForegroundColor Yellow
+Write-Host " SCAN COMPLETE" -ForegroundColor Yellow
+Write-Host ("=" * 70) -ForegroundColor Yellow
+
+
+Write-Host "Total files in Source (A): $($AFiles.Count)"
+Write-Host "Files identified to move:  $($FilesToMove.Count)" -ForegroundColor Cyan
+Write-Host ("─" * 70)
+
+if ($FilesToMove.Count -gt 0) {
+    Write-Host "Top 10 Files to be Moved (Full Paths):" -ForegroundColor Gray
+    # Randomly pick 20 items from the list, then format the table
+    $FilesToMove | Get-Random -Count 20 | Select-Object Source, Destination | Format-Table -AutoSize
+    
+    $confirm = Read-Host "Proceed with moving $($FilesToMove.Count) files? (Type 'y' to confirm)"
+    if ($confirm -ne 'y') {
+        Write-Host "Operation cancelled by user." -ForegroundColor Red
+        exit
+    }
+} else {
+    Write-Host "No files match the criteria for moving." -ForegroundColor Green
+    exit
+}
+
+# --- Step 4: Execution ---
+Write-Host "`n[4/4] Executing move operations..." -ForegroundColor Cyan
+$movedCount = 0
+foreach ($task in $FilesToMove) {
+    $movedCount++
+    if (($movedCount % 200) -eq 0) {
+        $percent = [math]::Round(($movedCount / $FilesToMove.Count) * 100)
+        Write-Progress -Activity "Moving Files" -Status "Progress: $movedCount / $($FilesToMove.Count)" -PercentComplete $percent
+    }
+    
+    $destDir = Split-Path $task.Destination -Parent
+    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir | Out-Null }
+    
+    try {
+        Move-Item $task.Source $task.Destination -Force -ErrorAction Stop
+    } catch {
+        Write-Host "Failed to move: $($task.FileName)" -ForegroundColor Red
+    }
+}
+Write-Progress -Activity "Moving Files" -Completed
+Write-Host "`nDone! Successfully moved $movedCount files." -ForegroundColor Green
+
 
