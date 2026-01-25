@@ -64,7 +64,9 @@ param(
     [ValidateSet("Intersect","int","Subtract","sub")]
     [string]$Mode,       # Operation mode
     [Parameter(Mandatory)]
-    [string]$CPath       # Destination for moved files
+    [string]$CPath,       # Destination for moved files
+    [switch]$Trace,    
+    [switch]$CaseSensitive 
 )
 
 . ([System.IO.Path]::Combine($PSScriptRoot, "..", "helpers.ps1"))
@@ -154,8 +156,8 @@ function Get-FileKey{
     #$rel = CalcRelativePath -RootPath $RootPath -FullPath $file.FullName
     $rel = $File.FullName.Substring($RootPath.Length).TrimStart('\','/')
 
-    $filename=$File.FullName.ToLowerInvariant()
     $ext = $file.Extension.ToLowerInvariant()
+    #Write-Host "res:$rel|$($File.FullName)|$RootPath"
 
     $type = ""
     if ($File.Name.EndsWith($videoDstExt, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -166,6 +168,10 @@ function Get-FileKey{
         $key = "$type." + $rel.Substring(0, $rel.Length - $ext.Length)
     } else {
         $key = "misc." + $rel.Substring(0, $rel.Length - $ext.Length)
+    }
+
+    if ($Trace) {
+        Write-Host "[TRACE] File: $($File.FullName) => Key: $key" -ForegroundColor Yellow
     }
 
     return $key 
@@ -192,7 +198,16 @@ if (-not (Test-Path $CPath)) {
 
 # Build hash index for B
 Write-Host "[2/4] Building index and calculating set operations..." -ForegroundColor Cyan
-$BIndex = [System.Collections.Generic.Dictionary[string, System.IO.FileInfo]]::new()
+#$BIndex = [System.Collections.Generic.Dictionary[string, System.IO.FileInfo]]::new()
+
+$KeyComparer = if ($CaseSensitive) {
+    [System.StringComparer]::Ordinal
+} else {
+    [System.StringComparer]::OrdinalIgnoreCase
+}
+
+$BIndex = [System.Collections.Generic.Dictionary[string, System.IO.FileInfo]]::new($KeyComparer)
+
 
 $count = 0
 foreach ($b in $BFiles) {
@@ -200,7 +215,11 @@ foreach ($b in $BFiles) {
     if (($count % 200) -eq 0) {
         Write-Progress -Activity "[2/4] Building B index" -Status "$count/ $($BFiles.Count)" -PercentComplete ($count * 100 / $BFiles.Count)
     }
-    $key = Get-FileKey $b $BPath $ExtMap
+    $key = Get-FileKey $b $BPath 
+
+
+    $exists = $BIndex.ContainsKey($key)
+
     if (-not $BIndex.ContainsKey($key)) {
         $BIndex.Add($key, $b)
     }
@@ -218,7 +237,7 @@ foreach ($afile in $AFiles) {
     }
 
     # Look up B index first
-    $key = Get-FileKey $afile $APath $ExtMap
+    $key = Get-FileKey $afile $APath 
     $bfile = $BIndex[$key]
     $matched = Test-FileEqual $afile $bfile
 
@@ -230,20 +249,15 @@ foreach ($afile in $AFiles) {
 
     if ($shouldMove) {
         $relativePath = $afile.FullName.Substring($APath.Length).TrimStart('\','/')
-        $dest = Join-Path $CPath $relativePath
-        $destDir = Split-Path $dest -Parent
+        $destFile = Join-Path $CPath $relativePath
+        $destDir = Split-Path $destFile -Parent
 
         $FilesToMove.Add([PSCustomObject]@{
             FileName    = $afile.Name
             Source      = $afile.FullName
-            Destination = $destDir 
+            DestFile    = $destFile
+            DestDir = $destDir 
         })
-
-        # if (-not (Test-Path $destDir)) {
-        #     New-Item -ItemType Directory -Path $destDir | Out-Null
-        # }
-        # Write-Host "Moving file: $($afile.FullName) -> $dest" -ForegroundColor Cyan
-        # Move-Item $afile.FullName $dest -Force
     }
 }
 Write-Progress -Activity "Analyzing Files" -Completed
@@ -259,9 +273,9 @@ Write-Host "Files identified to move:  $($FilesToMove.Count)" -ForegroundColor C
 Write-Host ("─" * 70)
 
 if ($FilesToMove.Count -gt 0) {
-    Write-Host "Top 10 Files to be Moved (Full Paths):" -ForegroundColor Gray
+    Write-Host "Top 50 Files to be Moved (Ramdom):" -ForegroundColor Gray
     # Randomly pick 20 items from the list, then format the table
-    $FilesToMove | Get-Random -Count 20 | Select-Object Source, Destination | Format-Table -AutoSize
+    $FilesToMove | Get-Random -Count 50 | Select-Object Source, DestFile | Format-Table -AutoSize
     
     $confirm = Read-Host "Proceed with moving $($FilesToMove.Count) files? (Type 'y' to confirm)"
     if ($confirm -ne 'y') {
@@ -283,16 +297,14 @@ foreach ($task in $FilesToMove) {
         Write-Progress -Activity "Moving Files" -Status "Progress: $movedCount / $($FilesToMove.Count)" -PercentComplete $percent
     }
     
-    $destDir = Split-Path $task.Destination -Parent
-    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir | Out-Null }
+    if (-not (Test-Path $task.DestDir)) { New-Item -ItemType Directory -Path $task.DestDir | Out-Null }
     
     try {
-        Move-Item $task.Source $task.Destination -Force -ErrorAction Stop
+        Move-Item $task.Source $task.DestFile -Force -ErrorAction Stop
     } catch {
         Write-Host "Failed to move: $($task.FileName)" -ForegroundColor Red
     }
 }
 Write-Progress -Activity "Moving Files" -Completed
 Write-Host "`nDone! Successfully moved $movedCount files." -ForegroundColor Green
-
 
