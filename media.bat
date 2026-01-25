@@ -110,16 +110,15 @@ endlocal
 set "temp_val=!%1!"
 if "!temp_val!"=="" goto :eof
 
-:: 去掉末尾双引号
+:: Remove trailing double quote
 if "!temp_val:~-1!"=="\"" set "temp_val=!temp_val:~0,-1!"
 
-:: 循环去尾反斜杠
+:: Recursively remove backslashes from the end
 :strip_loop
 if "!temp_val:~-1!"=="\" (
     set "temp_val=!temp_val:~0,-1!"
     goto strip_loop
 )
 
-:: 写回变量
 set "%1=!temp_val!"
 goto :eof

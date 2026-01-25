@@ -7,6 +7,45 @@ param(
     [string]$BackupDirName = "", # 备份目录
     [string]$ExtFilter = "" 
 )
+function Write-ScanSummary {
+    param (
+        [string]$Title,        # 标题，如 "图片文件"
+        [int]$Count,           # 已压缩数量
+        [long]$SrcSize,        # 原始大小
+        [long]$DstSize,        # 压缩后大小
+        [int]$UnconvertedCount,# 未转换数量
+        [long]$UnconvertedSize,# 未转换大小
+        [int]$DoneCount     # 已删除源文件数量
+    )
+
+    $SavedSize = $SrcSize - $DstSize
+    $SavedPercent = if ($SrcSize -gt 0) { 
+        [math]::Round((1 - $DstSize / $SrcSize) * 100, 1) 
+    }
+    else { 0 }
+
+    Write-Host ""
+    Write-Host "$Title" -ForegroundColor Cyan
+
+    if ($Count -gt 0) {
+        Write-Host ("  已压缩数量: ", $Count) -ForegroundColor White
+        Write-Host ("  原始总计: ", (Format-Size $SrcSize)) -ForegroundColor Gray
+        Write-Host ("  当前总计: ", (Format-Size $DstSize)) -ForegroundColor Gray
+        Write-Host ("  节省空间: ", "$(Format-Size $SavedSize) ($SavedPercent%)") -ForegroundColor Green
+    } else {
+        Write-Host ("  已压缩数量: ", "0") -ForegroundColor DarkGray
+    }
+
+    if ($UnconvertedCount -gt 0) {
+        Write-Host ("  未转换数量: ", $UnconvertedCount) -ForegroundColor Yellow
+        Write-Host ("  未转换大小: ", (Format-Size $UnconvertedSize)) -ForegroundColor Gray
+    } else {
+        Write-Host ("  未转换数量: ", "0") -ForegroundColor DarkGray
+    }
+
+    Write-Host ("  已删除源文件:",$DoneCount) -ForegroundColor DarkGray
+}
+
 
 # 解析目录路径
 if (-not (Test-Path -LiteralPath $SourcePath)) {
@@ -76,7 +115,7 @@ $videoDstExt = $configData.VideoOutputExt
 
 # 扫描文件
 #$allFiles = [System.Collections.Generic.List[object]]::new()
-$UserExtFilter = Parse-ExtFilter -ExtInput $ExtFilter
+$UserExtFilter = Resolve-ExtFilter -ExtInput $ExtFilter
 $filesByDirAndBase = @{}
 $spinnerScan = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 500
 foreach ($file in Get-ChildItem $SourcePath -Recurse -File) {
@@ -362,8 +401,11 @@ if ($Mode -eq 0) {
 $deletedCount = 0
 $errorCount = 0
 
+$spinnerOp = New-ConsoleSpinner -Title "正在操作" -Total $allMatches.Count  -SamplingRate 200 
+
 $allMatches | ForEach-Object {
     try {
+        &$spinnerOp $_.Src.FullName
         if ($Mode -eq 0) {
             # 备份模式：移动到备份目录，保持相同的相对路径
             $backupPath = Join-Path $BackupRoot $_.RelativePath

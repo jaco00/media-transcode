@@ -15,8 +15,13 @@ enum MediaType {
 # --- 1. 内部函数：加载配置 ---
 function Load-ToolConfig {
     $ConfigName = "tools.json"
-    $ScriptDir = $PSScriptRoot
-    if (-not $ScriptDir) { $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition }
+    $ScriptDir = if ($PSScriptRoot) {
+        $PSScriptRoot
+    } elseif ($MyInvocation.MyCommand.Path) {
+        Split-Path -Parent $MyInvocation.MyCommand.Path
+    } else {
+        $null
+    }
 
     $PossiblePaths = @(
         (Join-Path $ScriptDir $ConfigName),
@@ -28,17 +33,18 @@ function Load-ToolConfig {
         if (Test-Path -LiteralPath $path) { $SelectedPath = $path; break }
     }
 
-    if (-not $SelectedPath) { Write-Error "未找到 $ConfigName"; return $false }
+    if (-not $SelectedPath) { 
+        Write-Error "Could not locate configuration file: $ConfigName" -ErrorAction Stop
+    }
 
     try {
         $RawContent = Get-Content -LiteralPath $SelectedPath -Raw -Encoding UTF8
         $script:ConfigJson = $RawContent | ConvertFrom-Json
-        Write-Host "✅ 已加载配置文件: $SelectedPath" -ForegroundColor Green
-        return $true
+        Write-Host "✅ Configuration file loaded: $SelectedPath" -ForegroundColor Green
     } catch {
-        Write-Error "解析 JSON 失败: $($_.Exception.Message)"
-        return $false
+        Write-Error "Failed to parse JSON configuration: $($_.Exception.Message)" -ErrorAction Stop
     }
+    return $true
 }
 
 # ---  交互逻辑：参数确认与修改 ---
@@ -433,58 +439,4 @@ function Convert-FilesToTasks {
         })
     }
     return $tasks
-}
-
-
-# --- 6. 测试演示 ---
-if ($MyInvocation.InvocationName -ne '.') {
-    if (-not (Load-ToolConfig)) { exit }
-
-    # 获取动态支持列表
-    $Supported = Get-SupportedExtensions
-    $imageExtensions = $Supported.image
-    $videoExtensions = $Supported.video
-
-    # 获取用户交互参数
-    $userParams = Invoke-ParameterInteraction -Type ([MediaType]::All) -UseGpu $true -Silent $false
-    $commandMap = Get-CommandMap -UserParamsMap $userParams
-    
-    $MockIn = "C:\Test\Input_File"
-    $MockOut = "C:\Test\Output_File"
-
-    Write-Host "`n===============================================" -ForegroundColor Gray
-    Write-Host "   🔍 格式转换命令预览 (按类别分层)" -ForegroundColor Cyan
-    Write-Host "===============================================" -ForegroundColor Gray
-
-    # --- 第一步：遍历图片 ---
-    Write-Host "📸 [图片类] 支持格式及命令预览:" -ForegroundColor Yellow
-    foreach ($ext in $imageExtensions) {
-        if ($commandMap.ContainsKey($ext)) {
-            Write-Host "  扩展名 $ext :" -ForegroundColor Green
-            foreach ($t in $commandMap[$ext]) {
-                $finalArgs = $t.ArgsArray | ForEach-Object { $_.Replace('$IN$', "`"$MockIn$ext`"").Replace('$OUT$', "`"$MockOut.avif`"") }
-                Write-Host "    > [$($t.ToolName)] : $($t.SafePath) $($finalArgs -join ' ')" -ForegroundColor White
-            }
-        }
-    }
-
-    Write-Host ""
-
-    # --- 第二步：遍历视频 ---
-    Write-Host "🎬 [视频类] 支持格式及命令预览:" -ForegroundColor Yellow
-    foreach ($ext in $videoExtensions) {
-        # 注意：视频在 commandMap 中的 Key 可能是 .mp4_gpu 或 .mp4_cpu
-        # 这里扫描所有包含该后缀的 Key
-        $matchedKeys = $commandMap.Keys | Where-Object { $_ -like "$ext*" }
-        
-        foreach ($key in $matchedKeys) {
-            Write-Host "  扩展名 $key :" -ForegroundColor Magenta
-            foreach ($t in $commandMap[$key]) {
-                $finalArgs = $t.ArgsArray | ForEach-Object { $_.Replace('$IN$', "`"$MockIn$ext`"").Replace('$OUT$', "`"$MockOut.h265.mp4`"") }
-                Write-Host "    > [$($t.ToolName)] : $($t.SafePath) $($finalArgs -join ' ')" -ForegroundColor White
-            }
-        }
-    }
-
-    Write-Host "===============================================`n" -ForegroundColor Gray
 }

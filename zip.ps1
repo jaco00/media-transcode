@@ -159,7 +159,7 @@ if(!$IsAutoMode) {
 if($Cmd -eq "filter"){
     $extInput = Read-Host "请输入要处理的文件后缀（如 .jpg,.jpeg，直接回车=不过滤）"
     if (-not [string]::IsNullOrWhiteSpace($extInput)) {
-        $UserExtFilter = Parse-ExtFilter -ExtInput $extInput
+        $UserExtFilter = Resolve-ExtFilter -ExtInput $extInput
     }
 }
 

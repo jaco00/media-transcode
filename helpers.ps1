@@ -31,24 +31,20 @@ function Write-CompressionStatus {
         [double]$ElapsedSeconds = 0
     )
 
-    # 计算压缩率（小于100表示变小，大于100表示变大）
     $percent = (($SrcBytes - $NewBytes) / $SrcBytes) * 100
     if ([double]::IsNaN($percent)) {
         $percent = 0
     }
     $percentStr = "{0:N1}%" -f $percent
-        
 
     $indexWidth = ($Total).ToString().Length
     $indexStr = $("[{0," + $indexWidth + "}/{1," + $indexWidth + "}]") -f $Index, $Total
 
-    # 进度条长度
     $progressBarLength = 10
 
     $fillPercent = [math]::Min([math]::Abs($percent) / 100, 1) 
     $filledLength = [math]::Round($progressBarLength * $fillPercent)
     
-    # 填充进度条
     $barFilled = "█" * $filledLength
     $barEmpty = "░" * ($progressBarLength - $filledLength)
     $barColor = if ($percent -lt 10) { "Red" } else { "Green" }
@@ -58,7 +54,6 @@ function Write-CompressionStatus {
 
     $icon = Get-FileIcon $File
 
-    # 输出：图标/序号 Cyan，进度条颜色根据压缩或膨胀变化，大小/百分比 Yellow，文件名 Cyan
     Write-Host "$icon $indexStr " -NoNewline -ForegroundColor Cyan
     Write-Host "$barFilled" -NoNewline -ForegroundColor $barColor
     
@@ -115,49 +110,6 @@ function New-ConsoleSpinner {
             Write-Host ""
         }
     }.GetNewClosure()
-}
-
-function Write-ScanSummary {
-    param (
-        [string]$Title,        # 标题，如 "图片文件"
-        [int]$Count,           # 已压缩数量
-        [long]$SrcSize,        # 原始大小
-        [long]$DstSize,        # 压缩后大小
-        [int]$UnconvertedCount,# 未转换数量
-        [long]$UnconvertedSize,# 未转换大小
-        [int]$DoneCount     # 已删除源文件数量
-    )
-
-    $SavedSize = $SrcSize - $DstSize
-    $SavedPercent = if ($SrcSize -gt 0) { 
-        [math]::Round((1 - $DstSize / $SrcSize) * 100, 1) 
-    }
-    else { 0 }
-
-    # 打印子标题
-    Write-Host ""
-    Write-Host "$Title" -ForegroundColor Cyan
-
-    # --- 处理已压缩部分 ---
-    if ($Count -gt 0) {
-        Write-Host ("  已压缩数量: ", $Count) -ForegroundColor White
-        Write-Host ("  原始总计: ", (Format-Size $SrcSize)) -ForegroundColor Gray
-        Write-Host ("  当前总计: ", (Format-Size $DstSize)) -ForegroundColor Gray
-        Write-Host ("  节省空间: ", "$(Format-Size $SavedSize) ($SavedPercent%)") -ForegroundColor Green
-    } else {
-        Write-Host ("  已压缩数量: ", "0") -ForegroundColor DarkGray
-    }
-
-    # --- 处理未转换部分 ---
-    if ($UnconvertedCount -gt 0) {
-        Write-Host ("  未转换数量: ", $UnconvertedCount) -ForegroundColor Yellow
-        Write-Host ("  未转换大小: ", (Format-Size $UnconvertedSize)) -ForegroundColor Gray
-    } else {
-        Write-Host ("  未转换数量: ", "0") -ForegroundColor DarkGray
-    }
-
-    # --- 清理记录 ---
-    Write-Host ("  已删除源文件:",$DoneCount) -ForegroundColor DarkGray
 }
 
 function CalcRelativePath {
@@ -247,7 +199,7 @@ function Resolve-ToolExe {
     }
 }
 
-function ParseExtFilter {
+function Resolve-ExtFilter {
     param(
         [string]$ExtInput
     )
