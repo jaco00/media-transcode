@@ -219,7 +219,7 @@ $videoFiles = [System.Collections.Generic.List[object]]::new()
 $skipCount = 0    # 手动跳过计数
 
 # 获取所有文件
-$spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 500
+$spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 2500
 
 foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
     &$spinner $file.FullName

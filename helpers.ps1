@@ -77,7 +77,7 @@ function New-ConsoleSpinner {
     )
 
     $count = 0
-    $spinnerChars = @('-', '\', '|', '/')
+    $spinnerChars = @('⠋','⠙','⠹','⠸','⠼','⠴')
     $spinnerIndex = 0
     $esc = [char]27
 
@@ -94,8 +94,8 @@ function New-ConsoleSpinner {
         }
 
         if ( $Finalize -or $script:count % $SamplingRate -eq 0 ) {
-            $char = $spinnerChars[$spinnerIndex % $spinnerChars.Count]
-            $spinnerIndex++
+            $char = $spinnerChars[$script:spinnerIndex % $spinnerChars.Count]
+            $script:spinnerIndex++
 
             if ($Total -gt 0) {
                 $percent = [math]::Round(($script:count / $Total) * 100, 1)
@@ -184,18 +184,21 @@ function Resolve-ToolExe {
         #Write-Host "[找到工具] PATH: $toolPath" -ForegroundColor DarkGreen
     }
     else {
-        throw "未找到可用的 $ExeName（bin 或 PATH）"
+        Write-Host "Error: Required executable '$ExeName' not found in .\bin or System PATH." -ForegroundColor Red
+        exit $exitCode
     }
 
-    # 测试可执行性
-    try {
-        & "$toolPath" -version *> $null
+    & "$toolPath" *> $null
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ge -1 -and $exitCode -le 1) {
         Write-Host "🔧 [$toolPath] " -ForegroundColor Gray -NoNewline
         Write-Host "✓" -ForegroundColor Green
         return $toolPath
     }
-    catch {
-        throw "$ExeName 找到路径 $toolPath，但无法运行"
+    else {
+        $hexCode = "0x{0:X8}" -f $exitCode
+        Write-Host "Error: Found '$toolPath' but execution failed with exit code $hexCode." -ForegroundColor Red
+        exit $exitCode 
     }
 }
 
