@@ -2,6 +2,14 @@
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 
+:: Change the working directory to the current batch file's location
+cd /d "%~dp0"
+
+:: --- 1. Automatic Unblocking ---
+:: Recursively unblock all .ps1 files in the current folder and subfolders.
+:: This removes the "Mark of the Web" (Zone.Identifier) that causes security warnings.
+powershell -NoProfile -Command "Get-ChildItem -Path '%~dp0' -Filter *.ps1 -Recurse | Unblock-File -ErrorAction SilentlyContinue"
+
 :: =============================================================
 :: Argument Preprocessing (Use quotes for paths with spaces)
 :: =============================================================
@@ -56,7 +64,7 @@ goto :end
 
 :comp_logic
 if "%SRC_DIR%" == "" goto :missing_src
-%PS_CMD% "%~dp0comp.ps1" -SourcePath "%SRC_DIR%" -Mode middle
+%PS_CMD% "%~dp0comp.ps1" -SourcePath "%SRC_DIR%" 
 goto :end
 
 :clean_logic

@@ -294,8 +294,6 @@ Get-ChildItem -Path $SourcePath -Recurse -File | ForEach-Object {
             Checker = $targetChecker
             Result  = $null
         })
-    }else{
-        Write-Host "not found $dstFile"
     }
 }
 &$spinner "Done" -Finalize

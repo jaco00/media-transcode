@@ -3,7 +3,6 @@
 # ===============================
 
 # 检查是否在 pwsh 中运行，如果不是则用 pwsh 重新运行
-$requiredVersion = [version]"7.0.0"
 $isPwsh = $PSVersionTable.PSVersion.Major -ge 7 -and $PSVersionTable.PSEdition -eq "Core"
 
 if (-not $isPwsh) {

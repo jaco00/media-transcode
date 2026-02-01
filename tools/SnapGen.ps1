@@ -1,7 +1,45 @@
 ﻿# ==========================================
-# Tool Name: SnapGen (Simplified)
+# Tool Name: SnapGen 
 # Usage: .\SnapGen.ps1 -SourcePath "C:\Orig" -SidecarPath "C:\Side"
 # ==========================================
+
+
+<#
+.SYNOPSIS
+    PC-side pre-processor for PhotoPrism thumbnails.
+
+.DESCRIPTION
+    This script is designed to run on a Windows PC to pre-generate thumbnails 
+    for performance-constrained devices (e.g., R5S, NanoPi, or low-end NAS). 
+    
+    PRIMARY USE CASE:
+    Generating "Sidecar" thumbnails for PhotoPrism. By processing on a PC, 
+    you prevent the R5S from hanging or overheating during indexing.
+
+.PARAMETER SourcePath
+    The absolute path to your original high-resolution photo collection.
+
+.PARAMETER OutputPath
+    The destination folder for generated thumbnails (to be synced to R5S).
+
+.EXAMPLE
+    .\SnapGen.ps1 -SourcePath "D:\Photos" -SidecarPath "D:\R5S_Sidecar"
+
+.NOTES
+    MANUAL PERMISSION SETUP:
+    Since this script is downloaded, Windows will block it by default:
+    1. Right-click this .ps1 file -> Properties -> Check 'Unblock' -> OK.
+    2. To allow execution, run this command in PowerShell:
+       Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+    PERFORMANCE UPGRADE:
+    This script runs significantly faster on PowerShell 7 due to multi-core parallelism.
+    To install PowerShell 7, run the following command in your terminal:
+    
+    winget install Microsoft.PowerShell
+
+    After installation, search for 'PowerShell 7' (pwsh.exe) in your Start Menu.
+#>
 
 param(
     [Parameter(Mandatory=$true, Position=0, HelpMessage="Please specify the Source (Originals) path.")]
@@ -16,9 +54,42 @@ param(
     [int]$MaxThreads=0,
     [bool]$ShowDetails = $false,
     [switch]$Overwrite,
-    [switch]$Quiet
+    [switch]$Quiet,
+    [switch]$IsUpgrade
 
 )
+
+$ParentDir = (Get-Item "$PSScriptRoot\..").FullName
+$TargetFolders = @($PSScriptRoot, $ParentDir)
+Get-ChildItem -Path $TargetFolders -Filter *.ps1 -Recurse | Unblock-File -ErrorAction SilentlyContinue
+
+# --- PowerShell Engine Optimization ---
+
+if (-not $IsUpgrade -and $PSVersionTable.PSVersion.Major -lt 7) {
+    $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwsh) {
+        Write-Host ">> Switching to PowerShell 7 for Parallel Processing" -ForegroundColor Cyan
+        $scriptArgs = @()
+        foreach ($key in $PSBoundParameters.Keys) {
+            $val = $PSBoundParameters[$key]
+            
+            if ($val -is [switch] -or $val -is [bool]) {
+                if ($val) { $scriptArgs += "-$key" } 
+            } else {
+                $scriptArgs += "-$key"
+                $scriptArgs += $val
+            }
+        }
+        if (-not $scriptArgs -contains "-IsUpgrade") { $scriptArgs += "-IsUpgrade" }
+        $scriptArgs += $MyInvocation.UnboundArguments
+
+        & $pwsh.Source -NoProfile -ExecutionPolicy Bypass -File "$PSCommandPath" @scriptArgs
+        exit
+    } else {
+        Write-Host "!! Legacy Engine Detected. Please install PowerShell 7." -ForegroundColor Yellow
+        Write-Host "!! Use winget: winget install Microsoft.PowerShell" -ForegroundColor Gray
+    }
+}
 
 $ReservedCores = 2
 
@@ -92,7 +163,6 @@ $spinner = New-ConsoleSpinner -Title "Scanning for images in $SourcePath" -Sampl
 Get-ChildItem -Path $SourcePath -Recurse -File -Include *.jpg, *.jpeg, *.png, *.heic, *.webp, *.avif | ForEach-Object {
     &$spinner $_.FullName
 
-
     $relPath = $_.FullName.Substring($SourcePath.Length).TrimStart('\')
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if ($relPath.StartsWith($sep)) {
@@ -135,6 +205,18 @@ else {
     return
 }
 
+$dateSuffix = Get-Date -Format "yyyyMMdd"
+$LogFile = Join-Path $SourcePath "log_$dateSuffix.txt" #
+
+function Write-TaskLog {
+    param($Result)
+    if (-not $Result.Success) {
+        $logEntry = "[$(Get-Date -Format 'HH:mm:ss')] FAILED: $($Result.File) | Reason: $($Result.ErrorMessage -replace '[\r\n\t]+', '|')"  
+        $logEntry | Out-File -FilePath $LogFile -Append -Encoding utf8
+        Write-Host "$($Result.ErrorMessage)" -ForegroundColor White 
+    }
+}
+
 function Invoke-SnapProcess {
     param(
         [Parameter(Mandatory)]
@@ -150,6 +232,7 @@ function Invoke-SnapProcess {
         NewBytes  = 0
         File      = $Task.Src
         StartTime = Get-Date
+        ErrorMessage = ""
     }
 
     try {
@@ -161,8 +244,8 @@ function Invoke-SnapProcess {
         
         $opsArray = $Config.MagickOps.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
         $allArgs = @($Task.Src) + $opsArray + @("-resize", $Config.ResLimit, "-quality", $Config.Quality, $Task.Dst)
+        $cmdString = "$($Config.MagickExe) " + ($allArgs -join " ")
         if ($Config.ShowDetails) {
-            $cmdString = "$ExePath " + ($allArgs -join " ")
             Write-Host "  > CMD: $cmdString" -ForegroundColor DarkGray
         }
 
@@ -174,15 +257,18 @@ function Invoke-SnapProcess {
             $res.NewBytes = (Get-Item $Task.Dst).Length
             $res.Success  = $true
         }else{
-            Write-Host "`n  [ERROR] Execution Failed" -ForegroundColor Red
-            Write-Host "  Command: $displayCmd" -ForegroundColor Red
-            Write-Host "  ExitCode: $currentExitCode" -ForegroundColor Red
+            $details = "⚠ Command exited with non-zero code`n"
+            $details += "File: $($Task.Src) `n"
+            $details += "Cmd : $cmdString `n"
+            $details += "Code: $currentExitCode `n"
             if ($output) {
-                Write-Host "  Output: $($output -join "`n")" -ForegroundColor Red
+                $details += "Message: $($output -join ' ')`n"
             }
+            $res.ErrorMessage = $details
         }
     } catch {
         $res.Success = $false
+        $res.ErrorMessage = "System Exception: $($_.Exception.Message)"
     }
     return $res
 }
@@ -207,6 +293,7 @@ if ($MaxThreads -gt 1) {
     } -ThrottleLimit $MaxThreads | ForEach-Object {
         $res = $_
         $counter++
+        Write-TaskLog -Result $res
         if ($res.Success) {
             $SrcBytes += $res.SrcBytes
             $NewBytes += $res.NewBytes
@@ -216,15 +303,15 @@ if ($MaxThreads -gt 1) {
             Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $total -ElapsedSeconds $elapsed
         } else {
             $Failed++
-            Write-Host " ✖ Processing Failed ($counter/$total): $($res.File)" -ForegroundColor Red
+            Write-Host "❌ Processing Failed ($counter/$total): $($res.File)" -ForegroundColor Red
         }
     }
 }
 else {
     foreach ($task in $tasks) {
         $counter++
+        Write-TaskLog -Result $res
         $res = Invoke-SnapProcess -Task $task -Config $SnapConfig
-        $type = $res.Type
 
         if ($res.Success) {
             $SrcBytes += $res.SrcBytes
@@ -235,7 +322,7 @@ else {
             Write-CompressionStatus -File $res.File -SrcBytes $res.SrcBytes -NewBytes $res.NewBytes -Index $counter -Total $total -ElapsedSeconds $elapsed
         } else {
             $Failed++
-            Write-Host " ✖ Processing Failed ($counter/$total): $($res.File)" -ForegroundColor Red
+            Write-Host "❌ Processing Failed ($counter/$total): $($res.File)" -ForegroundColor Red
         }
     }
 }
