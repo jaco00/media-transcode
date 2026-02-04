@@ -28,7 +28,10 @@
 .NOTES
     MANUAL PERMISSION SETUP:
     Since this script is downloaded, Windows will block it by default:
-    1. Right-click this .ps1 file -> Properties -> Check 'Unblock' -> OK.
+    1. When a .ps1 file is downloaded from the internet, it may be marked as 
+       coming from an external source, and you may see an 'Unblock' option in 
+       the file's Properties. In such cases, you can manually unblock the file,
+       checking the 'Unblock' option, and then clicking OK.
     2. To allow execution, run this command in PowerShell:
        Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 

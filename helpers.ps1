@@ -77,7 +77,7 @@ function New-ConsoleSpinner {
     )
 
     $count = 0
-    $spinnerChars = @('⠋','⠙','⠹','⠸','⠼','⠴')
+    $spinnerChars = @('⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏')
     $spinnerIndex = 0
     $esc = [char]27
 
