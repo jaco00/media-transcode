@@ -1,3 +1,6 @@
+<p align="center">
+<strong>简体中文</strong> | <a href="README.en.md">English</a>
+</p>
 # 🚀 媒体批量压缩与转码工具 (Media Compressor Pro)
 
 这是一个专为 Windows 环境设计的 **高效媒体处理方案**。由资深程序员提供底层算法思路，利用 AI 协作编码完成。它能够帮助你将庞大的照片库和视频库，在**视觉无损**的前提下，体积减小约 **50%~80%**。
