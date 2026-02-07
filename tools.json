@@ -66,6 +66,7 @@
           "parameters": [
             ["-y"], ["-hide_banner"], ["-loglevel", "warning"], ["-stats"],
             ["-i", "$IN$"],
+            ["-map_metadata", "0", "-movflags", "use_metadata_tags"],
             ["-c:v", "hevc_nvenc"],
             ["-cq", "$CQ$"],
             ["-preset", "p4"],
@@ -83,6 +84,7 @@
           "parameters": [
             ["-y"], ["-hide_banner"], ["-loglevel", "warning"], ["-stats"],
             ["-i", "$IN$"],
+            ["-map_metadata", "0", "-movflags", "use_metadata_tags"],
             ["-c:v", "libx265"],
             ["-x265-params", "log-level=error"],
             ["-crf", "$CRF$"],
