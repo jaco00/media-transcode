@@ -151,7 +151,9 @@ if ($Test) {
         "d:\linux\photo\2025\mmexport1632052960498_mr1632055641594_mh1632063041769.avif",
         "d:\linux\photo\2022goMeihuaTemp_mh1527519531227.avif",
         "/mnt/media/photo/albums/2008.04.hunan.旅游/DSC_0277.avif",
-        "/mnt/media/photo/albums/2024.09.ShenZhen.Game/DSCN2838.avif"
+        "/mnt/media/photo/albums/2024.09.ShenZhen.Game/DSCN2838.avif",
+        "/mnt/media/photo/albums/20230509175757_0060.h265.mp4",
+        "/mnt/media/photo/albums/VID_20250113_165746"
     )
 
     foreach ($path in $testPaths) {
