@@ -173,26 +173,39 @@ foreach ($f in $targetFiles) {
 $tasks = [System.Collections.Generic.List[PSCustomObject]]::new()
 $processedDests = @{}
 $sourceFileCache = @{} 
+$totalTargets = $targetMap.Count
 
 # Stage 2: Source Match
 if (-not [string]::IsNullOrEmpty($SourcePath) -and (Test-Path -LiteralPath $SourcePath)) {
     Write-Host "🔍 Stage 2: Matching source files..." -ForegroundColor Gray
     $srcFiles = Get-ChildItem -LiteralPath $SourcePath -Recurse -File
+    $count = 0
     foreach ($sFile in $srcFiles) {
         $sName = $sFile.BaseName.ToLower()
         $sourceFileCache[$sName] = $sFile.FullName 
+        $count++
+
+        if ($count % 50 -eq 0 -or $count -eq $srcFiles.Count) {
+            $percent = if ($srcFiles.Count -gt 0) { [math]::Floor(($count / $srcFiles.Count) * 100) } else { 0 }
+            Write-Progress -Id 1 -Activity "Phase 2: Scanning Sources" -Status "Checked $count/$($srcFiles.Count) files" -PercentComplete $percent
+        }
+
         if ($targetMap.ContainsKey($sName)) {
             $dstPath = $targetMap[$sName]
-            $tasks.Add([PSCustomObject]@{ 
-                Dst = $dstPath; 
-                Src = $sFile.FullName; 
-                Mode = "📦 Clone"; 
-                NewDate = "Sync from EXIF" 
-            })
-            $processedDests[$dstPath] = $true
+
+            $check = Test-DateValid -FilePath $dstPath
+            if ($check.IsValid -and -not $Overwrite) {
+                $processedDests[$dstPath] = $true
+            } else {
+                $tasks.Add([PSCustomObject]@{ Dst = $dstPath; Src = $sFile.FullName; Mode = "📦 Clone"; NewDate = "Sync from exif" })
+                $processedDests[$dstPath] = $true
+            }
+
         }
     }
 }
+Write-Progress -Id 1 -Activity "Phase 2" -Completed
+
 
 # Stage 3: Validation & Fallback
 Write-Host "🔍 Stage 3: Analyzing logic for orphans..." -ForegroundColor Gray
@@ -206,7 +219,7 @@ foreach ($tPath in $targetArray) {
     $currentCount++
     if ($totalTargets -gt 0 -and ($currentCount % 50 -eq 0 -or $currentCount -eq $totalTargets)) {
         $percent = [math]::Round(($currentCount / $totalTargets) * 100)
-        Write-Progress -Activity "Analyzing files..." -Status "Processing $currentCount of $totalTargets ($percent%)" -PercentComplete $percent
+        Write-Progress -Id 2 -Activity "Analyzing files..." -Status "Processing $currentCount of $totalTargets ($percent%)" -PercentComplete $percent
     }
     if (-not $processedDests.ContainsKey($tPath)) {
 
@@ -233,7 +246,7 @@ foreach ($tPath in $targetArray) {
         $tasks.Add([PSCustomObject]@{ Dst = $tPath; Src = "-- NONE --"; Mode = $mode; NewDate = $finalDate })
     }
 }
-Write-Progress -Activity "Analyzing files..." -Completed
+Write-Progress -Id 2 -Activity "Analyzing files..." -Completed
 
 Write-Host "✅ Analysis Complete." -ForegroundColor Green
 Write-Host "   - Total Targets  : $totalTargets" -ForegroundColor Gray
