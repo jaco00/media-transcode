@@ -39,8 +39,6 @@ Write-Host "--------------------------------------------------" -ForegroundColor
 Write-Host "-> System detected / Current TimeZone: $TimeZone" -ForegroundColor Green
 Write-Host "--------------------------------------------------" -ForegroundColor Gray
 
-#[Console]::OutputEncoding = [System.Text.Encoding]::Default
-
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 
@@ -55,6 +53,38 @@ if (-not (Test-Path $ExifTool)) {
 $DestPath = (Resolve-Path $DestPath).Path
 if ($PSVersionTable.PSVersion.Major -lt 7) { 
     $MaxThreads = 1 
+}
+
+
+function Clean-ChineseDate {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Raw,
+        [string]$RawOffset
+    )
+    
+    $pattern = "(?<date>\d{4}[:/-]\d{2}[:/-]\d{2})\s+(?<h>\d{1,2}):(?<m>\d{2}):(?<s>\d{2})(\.\d+)?\s*(?<p>上午|下午)?"
+    if ($Raw -match $pattern) {
+        $date = $Matches.date.Replace("-", ":").Replace("/", ":")
+        $origH = [int]$Matches.h
+        $h = $origH
+        $m = $Matches.m
+        $s = $Matches.s
+        $period = $Matches.p
+        if ($period -eq "下午" -and $h -lt 12) { 
+            $h += 12 
+        }
+        elseif ($period -eq "上午" -and $h -eq 12) { 
+            $h = 0 
+        }
+        $newTime = "{0:D2}:{1}:{2}" -f $h, $m, $s
+        $result = "${date} ${newTime}"
+        if (-not [string]::IsNullOrWhiteSpace($RawOffset) -and $RawOffset -match "[+-]\d{2}:\d{2}") {
+            $result = "${result}${RawOffset}"
+        }
+        return $result
+    }
+    return $null
 }
 
 # --- 2. Helper Functions --
@@ -109,29 +139,23 @@ function Get-DateFromPath {
     return $null
 }
 
-
-# Encapsulated ExifTool update command - Optimized for Images
 function Invoke-ExifUpdate {
-    param(
-        [string]$ToolPath,
-        [string]$FilePath,
-        [string]$NewDate,
-        [string]$TzOffset
-    )
+    param([string]$ToolPath, [string]$FilePath, [string]$NewDate, [string]$TzOffset)
     
-    # Combined metadata write command passing FilePath directly
-    # Note: QuickTimeUTC removed as this script is now image-focused
     $tmpArg = [System.IO.Path]::GetTempFileName()
     [System.IO.File]::WriteAllLines($tmpArg, @($FilePath), (New-Object System.Text.UTF8Encoding($false)))
-    & $ToolPath -m -overwrite_original -charset filename=utf8 `
-      "-DateTimeOriginal=$NewDate" `
-      "-CreateDate=$NewDate" `
-      "-ModifyDate=$NewDate" `
-      "-OffsetTimeOriginal=$TzOffset" `
-      "-OffsetTimeDigitized=$TzOffset" `
-      "-OffsetTime=$TzOffset" `
-      "-@" $tmpArg | Out-Null
-      if (Test-Path $tmpArg) { Remove-Item $tmpArg -Force }
+    
+    if ($NewDate -match "[+-]\d{2}:\d{2}$") {
+        & $ToolPath -m -overwrite_original -charset filename=utf8 "-AllDates=$NewDate" "-@" $tmpArg | Out-Null
+    } else {
+        & $ToolPath -m -overwrite_original -charset filename=utf8 `
+          "-AllDates=$NewDate" `
+          "-OffsetTime=$TzOffset" `
+          "-OffsetTimeOriginal=$TzOffset" `
+          "-OffsetTimeDigitized=$TzOffset" `
+          "-@" $tmpArg | Out-Null
+    }
+    if (Test-Path $tmpArg) { Remove-Item $tmpArg -Force }
 }
 
 # --- 4. Special Mode: Test Mode ---
@@ -184,7 +208,7 @@ if (Test-Path -Path $DestPath -PathType Leaf) {
 
 Write-Host "-> Found $totalFiles files. Scanning metadata (this may take a while)..." -ForegroundColor Cyan
 
-$candidates = [System.Collections.Generic.List[string]]::new()
+$candidates = @{}
 $batchSize = 500 
 $currentIdx = 0
 
@@ -192,6 +216,7 @@ if ($Overwrite) {
     Write-Host "-> [OVERWRITE MODE] Adding all matching files to processing queue..." -ForegroundColor Cyan
     foreach ($file in $allFiles) {
         $candidates.Add($file.FullName)
+        $candidates[$file.FullName] = @{ Date = ""; Offset = "" }
     }
 } else {
 
@@ -203,19 +228,41 @@ if ($Overwrite) {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllLines($tmpInputList, ($batch.FullName), $utf8NoBom)
 
-        $results = & $ExifTool -charset filename=utf8 -T -s3 -DateTimeOriginal -@ $tmpInputList
-        
-        if ($null -ne $results) {
-            $resArray = @($results)
-            for ($i = 0; $i -lt $batch.Count; $i++) {
-                if ($i -lt $resArray.Count) {
-                    $dtVal = $resArray[$i].Trim()
-                    if ($dtVal -eq "-" -or $dtVal -eq "" -or $dtVal -notmatch "^(19|20)\d{2}") {
-                        $candidates.Add($batch[$i].FullName)
-                    }
+        $results = & $ExifTool -charset filename=utf8 -T -s3 -f -DateTimeOriginal -OffsetTimeOriginal -@ $tmpInputList <# 批量执行ExifTool扫描 #>
+
+        if ($null -ne $results) { <# 检查扫描结果是否为空 #>
+            $resLines = @($results) <# 强制转换为数组处理 #>
+            for ($i = 0; $i -lt $batch.Count; $i++) { <# 遍历当前批次文件 #>
+                $line = $resLines[$i] <# 取出对应行结果 #>
+                if ([string]::IsNullOrWhiteSpace($line)) { continue } <# 跳过空行 #>
+                
+                $parts = $line.Split("`t") <# 按制表符分割 #>
+                $dtVal = $parts[0].Trim() -replace '^-+$', '' <# 清理日期占位符 #>
+                $tzVal = if ($parts.Count -gt 1) { $parts[1].Trim() -replace '^-+$', '' } else { "" } <# 清理时区占位符 #>
+
+                $fileName = [System.IO.Path]::GetFileName($batch[$i].FullName)
+
+                if ($Overwrite -or $dtVal -eq "" -or $dtVal -notmatch "^(19|20)\d{2}" -or $dtVal -match "[\u4e00-\u9fa5]") {
+                    $candidates[$batch[$i].FullName] = @{ Date = $dtVal; Offset = $tzVal } <# 加入待处理候选队列 #>
                 }
             }
         }
+
+
+
+      #  $results = & $ExifTool -charset filename=utf8 -T -s3 -DateTimeOriginal -@ $tmpInputList
+      #  
+      #  if ($null -ne $results) {
+      #      $resArray = @($results)
+      #      for ($i = 0; $i -lt $batch.Count; $i++) {
+      #          if ($i -lt $resArray.Count) {
+      #              $dtVal = $resArray[$i].Trim()
+      #              if ($Overwrite -or $dtVal -eq "-" -or $dtVal -eq "" -or $dtVal -notmatch "^(19|20)\d{2}" -or $dtVal -match "[\u4e00-\u9fa5]") {
+      #                  $candidates[$batch[$i].FullName] = $dtVal
+      #              }
+      #          }
+      #      }
+      #  }
         
         if (Test-Path $tmpInputList) { Remove-Item $tmpInputList -Force }
         $currentIdx += $take
@@ -228,14 +275,77 @@ Write-Progress -Activity "Metadata Scanning" -Completed
 $imageTasks = [System.Collections.Generic.List[PSCustomObject]]::new()
 Write-Host "-> Stage 2: Analyzing paths for repair..." -ForegroundColor Cyan
 
-foreach ($path in $candidates) {
-    $inferred = Get-DateFromPath -Path $path
-    if ($inferred) {
-        $imageTasks.Add([PSCustomObject]@{ Dst = $path; NewDate = $inferred+$TimeZone })
+#foreach ($path in $candidates) {
+#    $inferred = Get-DateFromPath -Path $path
+#    if ($inferred) {
+#        $imageTasks.Add([PSCustomObject]@{ Dst = $path; NewDate = $inferred+$TimeZone })
+#    } else {
+#        Write-Host "X Error: No date pattern found in path for: '$path'" -ForegroundColor Red
+#    }
+#}
+
+
+
+
+
+
+foreach ($path in $candidates.Keys) { <# 遍历所有待处理文件的路径 #>
+    $item = $candidates[$path] <# 获取当前文件的元数据信息对象 #>
+    $rawDate = [string]$item.Date <# 显式转换为字符串 #>
+    $rawOff = [string]$item.Offset <# 显式转换原始时区字符串 #>
+    $fileName = [System.IO.Path]::GetFileName($path)
+    
+    $finalDate = $null <# 初始化最终结果日期 #>
+    
+    <# 1. 尝试清洗已有的异常日期 (处理 "下午" 等) #>
+    if ($rawDate -match "[\u4e00-\u9fa5]") { 
+        $finalDate = Clean-ChineseDate -Raw $rawDate -RawOffset $rawOff
+        if ($finalDate) { Write-Host "   [STAGE2] Fixed Chinese Date for $fileName : $finalDate" -ForegroundColor Gray }
+    }
+    
+    <# 2. 如果原始日期无法通过清洗修复，尝试从文件路径推断 #>
+    if (-not $finalDate) { 
+        $inferred = Get-DateFromPath -Path $path
+        if ($inferred) { 
+            $finalDate = $inferred 
+            Write-Host "   [STAGE2] Inferred Date from path for $fileName : $finalDate" -ForegroundColor Gray
+        }
+    }
+
+    <# 3. 结果汇总并入队 #>
+    if ($finalDate) { 
+        $taskOffset = if ([string]::IsNullOrWhiteSpace($rawOff)) { $TimeZone } else { $rawOff } <# 补全时区 #>
+        $imageTasks.Add([PSCustomObject]@{ Dst = $path; NewDate = $finalDate; Offset = $taskOffset }) <# 生成最终任务 #>
     } else {
-        Write-Host "X Error: No date pattern found in path for: '$path'" -ForegroundColor Red
+        Write-Host "   [STAGE2] Skip: No fixable pattern found for $fileName" -ForegroundColor DarkGray
     }
 }
+
+
+
+
+
+
+
+#foreach ($path in $candidates.Keys) {
+#    $rawDt = $candidates[$path]
+#    $finalDate = $null
+#
+#    if ($rawDt -match "[\u4e00-\u9fa5]") {
+#        $finalDate = Clean-ChineseDate -Raw $rawDt
+#    }
+#    
+#    if (-not $finalDate) {
+#        $inferred = Get-DateFromPath -Path $path
+#        if ($inferred) { $finalDate = $inferred }
+#    }
+#
+#    if ($finalDate) {
+#        $imageTasks.Add([PSCustomObject]@{ Dst = $path; NewDate = $finalDate })
+#    } else {
+#       Write-Host "X Error: No date pattern found in path for: '$path'" -ForegroundColor Red
+#    }
+#}
 
 # --- 5. Summary and Execution ---
 if ($imageTasks.Count -eq 0) {

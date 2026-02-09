@@ -89,9 +89,44 @@ function Get-DateFromPath {
     return $null
 }
 
+function Run-ExifTool-ArgMode {
+    param(
+        [string[]]$FullCommands,
+        [switch]$CaptureOutput  # 修正：补全了丢失的开关参数
+    )
+    $tmpFile = [System.IO.Path]::GetTempFileName()
+    try {
+        # Fix: Use UTF8 without BOM to ensure ExifTool parses the first line correctly
+        $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllLines($tmpFile, $FullCommands, $utf8NoBOM)
+        
+        if ($CaptureOutput) {
+            return & $ExifTool -charset filename=utf8 -@ "$tmpFile" 2>$null
+        } else {
+            & $ExifTool -charset filename=utf8 -@ "$tmpFile" 2>$null
+            return $LASTEXITCODE
+        }
+        return $LASTEXITCODE
+    } finally {
+        if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
+    }
+}
+
 function Test-DateValid {
     param([string]$FilePath)
-    $res = & $ExifTool -charset filename=utf8 -n -s3 -T -DateTimeOriginal $FilePath
+    $cmds = @("-n", "-s3", "-T", "-DateTimeOriginal", $FilePath)
+    $out = Run-ExifTool-ArgMode -FullCommands $cmds -CaptureOutput
+
+    $res = ""
+    if ($out) {
+        if ($out -is [array]) { 
+            # 如果是数组，取第一个非空的元素并转为字符串
+            $res = ($out | Where-Object { $_ } | Select-Object -First 1).ToString().Trim() 
+        }
+        else { 
+            $res = $out.ToString().Trim() 
+        }
+    }
     
     $isValid = $true
     if ([string]::IsNullOrWhiteSpace($res) -or $res -eq "-") { $isValid = $false }
@@ -107,15 +142,34 @@ function Test-DateValid {
 
 function Invoke-MetadataFix {
     param($Task)
-    $exifArgs = @("-charset", "filename=utf8", "-m", "-P", "-q", "-q", "-overwrite_original")
+    $baseArgs = @("-m", "-P", "-q", "-q", "-overwrite_original")
     $isVideo = $Task.Dst -match "\.($VideoExtRegex)$"
-    if ($isVideo) { $exifArgs += "-api", "QuickTimeUTC" }
+    if ($isVideo) { $baseArgs += "-api", "QuickTimeUTC" }
 
     if ($Task.Mode -match "Clone") {
-        $cloneArgs = $exifArgs + @("-tagsFromFile", $Task.Src, "-all:all>all:all", "-CreationDate<EncodedDate", "-MediaCreateDate<EncodedDate", "-CreateDate<EncodedDate", $Task.Dst)
-        & $ExifTool $cloneArgs
-        if ($LASTEXITCODE -ne 0) {
-            return [PSCustomObject]@{ Status = "Error"; Date = "FAILED"; Detail = "ExifTool Error ($LASTEXITCODE)" }
+        $cloneCmds = $baseArgs + @(
+            "-tagsFromFile", $Task.Src, 
+            "-all:all>all:all", 
+            
+            "-DateTimeOriginal<EncodedDate",
+            "-DateTimeOriginal<CreateDate",
+            "-DateTimeOriginal<DateTimeOriginal",
+            
+            "-CreationDate<EncodedDate",
+            "-CreationDate<CreateDate",
+            "-CreationDate<DateTimeOriginal",
+            
+            "-MediaCreateDate<EncodedDate",
+            "-MediaCreateDate<CreateDate",
+            "-MediaCreateDate<DateTimeOriginal",
+            
+            "-ModifyDate<ModifyDate",
+            
+            $Task.Dst
+        )
+        $exitCode = Run-ExifTool-ArgMode -FullCommands $cloneCmds
+        if ($exitCode -ne 0) {
+            return [PSCustomObject]@{ Status = "Error"; Date = "FAILED"; Detail = "ExifTool Error ($exitCode)" }
         }
 
         $check = Test-DateValid -FilePath $Task.Dst
@@ -127,15 +181,15 @@ function Invoke-MetadataFix {
                 $detailTag = "Clone->SrcTime"
             }
             Write-Host "  [!] Clone Failed/Invalid Metadata. Falling back to manual fix: $bestDate" -ForegroundColor Yellow
-            $fixArgs = $exifArgs + @("-DateTimeOriginal=$bestDate", "-CreateDate=$bestDate", "-ModifyDate=$bestDate")
+            $fixCmds = $baseArgs + @("-DateTimeOriginal=$bestDate", "-CreateDate=$bestDate", "-ModifyDate=$bestDate")
             if ($isVideo) { 
-                $fixArgs += "-CreationDate=$bestDate$TimeZone"
-                $fixArgs += "-MediaCreateDate=$bestDate" 
+                $fixCmds += "-CreationDate=$bestDate$TimeZone"
+                $fixCmds += "-MediaCreateDate=$bestDate" 
             }
-            $fixArgs += $Task.Dst
-            & $ExifTool $fixArgs
+            $fixCmds += $Task.Dst
+            $exitCode=Run-ExifTool-ArgMode -FullCommands $fixCmds 
              
-            if ($LASTEXITCODE -ne 0) {
+            if ($exitCode -ne 0) {
                 return [PSCustomObject]@{ Status = "Error"; Date = "FAILED"; Detail = "Fallback Error" }
             }
             return [PSCustomObject]@{ Status = "Warning"; Date = $bestDate; Detail = $detailTag }
@@ -144,15 +198,15 @@ function Invoke-MetadataFix {
         }
     } else {
         $val = $Task.NewDate
-        $exifArgs += "-DateTimeOriginal=$val", "-CreateDate=$val", "-ModifyDate=$val"
+        $exifArgs = $baseArgs+ "-DateTimeOriginal=$val", "-CreateDate=$val", "-ModifyDate=$val"
         if ($isVideo) { 
             $exifArgs += "-CreationDate=$val$TimeZone"
             $exifArgs += "-MediaCreateDate=$val" 
         }
         $exifArgs += $Task.Dst
-        & $ExifTool @exifArgs
-        if ($LASTEXITCODE -ne 0) {
-            return [PSCustomObject]@{ Status = "Error"; Date = "FAILED"; Detail = "Exif Error ($LASTEXITCODE)" }
+        $exitCode = Run-ExifTool-ArgMode -FullCommands $exifArgs
+        if ($exitCode -ne 0) {
+            return [PSCustomObject]@{ Status = "Error"; Date = "FAILED"; Detail = "Exif Error ($exitCode)" }
         }
         return [PSCustomObject]@{ Status = "Info"; Date = $val; Detail = "Inferred" }
     }
@@ -161,7 +215,9 @@ function Invoke-MetadataFix {
 # --- 3. Scanning & Task Building ---
 
 Write-Host "`n🔍 Stage 1: Indexing target files ($VideoTargetExt)..." -ForegroundColor Gray
-$targetFiles = Get-ChildItem -LiteralPath $DestPath -Recurse -File -Filter "*$VideoTargetExt"
+$allDestFiles = Get-ChildItem -LiteralPath $DestPath -Recurse -File -ErrorAction SilentlyContinue
+$targetFiles = $allDestFiles | Where-Object { $_.Name.EndsWith($VideoTargetExt, [System.StringComparison]::OrdinalIgnoreCase) }
+
 if (-not $targetFiles) { Write-Host "⚠️ No target files found." -ForegroundColor Yellow; return }
 
 $targetMap = @{}
@@ -176,9 +232,10 @@ $sourceFileCache = @{}
 $totalTargets = $targetMap.Count
 
 # Stage 2: Source Match
+
 if (-not [string]::IsNullOrEmpty($SourcePath) -and (Test-Path -LiteralPath $SourcePath)) {
     Write-Host "🔍 Stage 2: Matching source files..." -ForegroundColor Gray
-    $srcFiles = Get-ChildItem -LiteralPath $SourcePath -Recurse -File
+    $srcFiles = Get-ChildItem -LiteralPath $SourcePath -Recurse -File | Where-Object { $_.Extension -match $VideoExtRegex }
     $count = 0
     foreach ($sFile in $srcFiles) {
         $sName = $sFile.BaseName.ToLower()
@@ -310,8 +367,8 @@ foreach ($task in $tasks) {
     
     $icon = switch ($result.Status) {
         "Success" { "✅" }
-        "Warning" { "⚠️ " }
-        "Info"    { "🛠️ " }
+        "Warning" { "⚠️" }
+        "Info"    { "🛠️" }
         "Error"   { "❌" }
     }
     
@@ -322,8 +379,7 @@ foreach ($task in $tasks) {
         "Error"   { "Red" }
     }
 
-    $fName = Split-Path $task.Dst -Leaf
-    Write-Host ($outFmt -f $icon,$prog, $result.Detail, $result.Date, $fName) -ForegroundColor $color
+    Write-Host ($outFmt -f $icon,$prog, $result.Detail, $result.Date, $task.Dst) -ForegroundColor $color
 }
 
 Write-Host "`n✨ Finished! Metadata standardized successfully." -ForegroundColor Green
