@@ -165,7 +165,7 @@ function Worker {
                     }
                 }
                 $tempOutExists = Test-Path -LiteralPath $tempOut
-                if ($currentExitCode -eq 0 -and $tempOutExists) 
+                if ($currentExitCode -eq 0 -and $tempOutExists) {
                     # 必须在 Move-Item 之前获取大小，因为移动后临时路径就消失了
                     $resultTemplate.NewBytes = (Get-Item $tempOut).Length 
                     #Move-Item $tempOut $finalOut -Force
