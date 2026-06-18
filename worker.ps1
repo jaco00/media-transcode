@@ -1,4 +1,3 @@
-﻿
 
 function Invoke-FfmpegWithProgress {
     param(
@@ -11,7 +10,18 @@ function Invoke-FfmpegWithProgress {
 
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo.FileName = $ExePath
-    $proc.StartInfo.Arguments = $Args -join " "
+   
+    $escapedArgs = @()
+    foreach ($arg in $Args) {
+        if ($arg -match '\s' -and -not ($arg -match '^".*"$' -or $arg -match "^'.*'$")) {
+            $escapedArgs += '"{0}"' -f $arg
+        }
+        else {
+            $escapedArgs += $arg
+        }
+    } 
+    $proc.StartInfo.Arguments = $escapedArgs -join " "
+
     $proc.StartInfo.RedirectStandardError = $true
     $proc.StartInfo.UseShellExecute = $false
     $proc.StartInfo.CreateNoWindow = $true
@@ -19,37 +29,53 @@ function Invoke-FfmpegWithProgress {
     $proc.Start() | Out-Null
     $ProcessRef.Value = $proc
 
-    while (-not $proc.HasExited) {
-        $line = $proc.StandardError.ReadLine()
-        if (-not $line) { continue }
-        if ($line -match "time=(\d{2}:\d{2}:\d{2}\.\d{2}).*speed=\s*(\d+\.?\d*)x") {
-
-            $currentTimeStr = $Matches[1]
-            $speed = [double]$Matches[2]
-
-            $ts = [timespan]::Parse($currentTimeStr)
-            $currentSec = $ts.TotalSeconds
-
-            $percent = 0
-            $remaining = -1
-            if ($TotalSeconds -gt 0) {
-                $percent = ($currentSec / $TotalSeconds) * 100
-                if ($speed -gt 0.05) {
-                    $remaining = ($TotalSeconds - $currentSec) / $speed
-                }
+    try {
+        $reader = $proc.StandardError
+        while (-not $proc.HasExited) {
+            
+            if ($reader.EndOfStream) { 
+                Start-Sleep -Milliseconds 100
+                continue 
             }
-            Update-VideoProgressUI `
-                -Activity $ActivityText `
-                -Percent $percent `
-                -Speed $speed `
-                -CurrentTime $currentTimeStr `
-                -RemainingSeconds $remaining
+
+            $line = $reader.ReadLine()
+            if (-not $line) { continue }
+            if ($line -match "time=(\d{2}:\d{2}:\d{2}\.\d{2}).*speed=\s*(\d+\.?\d*)x") {
+
+                $currentTimeStr = $Matches[1]
+                $speed = [double]$Matches[2]
+
+                $ts = [timespan]::Parse($currentTimeStr)
+                $currentSec = $ts.TotalSeconds
+
+                $percent = 0
+                $remaining = -1
+                if ($TotalSeconds -gt 0) {
+                    $percent = ($currentSec / $TotalSeconds) * 100
+                    if ($speed -gt 0.05) {
+                        $remaining = ($TotalSeconds - $currentSec) / $speed
+                    }
+                }
+                Update-VideoProgressUI `
+                    -Activity $ActivityText `
+                    -Percent $percent `
+                    -Speed $speed `
+                    -CurrentTime $currentTimeStr `
+                    -RemainingSeconds $remaining
+            }
+        }
+    }
+    finally {
+        if ($proc -and -not $proc.HasExited) {
+            try {
+                $proc.Kill()
+            } catch {}
         }
     }
 
     $proc.WaitForExit()
     Write-Progress -Activity $ActivityText -Completed
-    Write-Host -NoNewline "`e[2K`e[G"
+    #Write-Host -NoNewline "`e[2K`e[G"
 
     return $proc.ExitCode
 }
@@ -138,13 +164,13 @@ function Worker {
                         Write-Host ($output -join "`n") -ForegroundColor Yellow
                     }
                 }
-
-                if ($currentExitCode -eq 0 -and (Test-Path $tempOut)) {
+                $tempOutExists = Test-Path -LiteralPath $tempOut
+                if ($currentExitCode -eq 0 -and $tempOutExists) 
                     # 必须在 Move-Item 之前获取大小，因为移动后临时路径就消失了
                     $resultTemplate.NewBytes = (Get-Item $tempOut).Length 
                     #Move-Item $tempOut $finalOut -Force
 
-                    Move-Item $tempOut $finalOut -Force -ErrorAction SilentlyContinue
+                    Move-Item -LiteralPath $tempOut $finalOut -Force -ErrorAction SilentlyContinue
 
                     if (-not $?) {
                         $parent = Split-Path $finalOut -Parent
