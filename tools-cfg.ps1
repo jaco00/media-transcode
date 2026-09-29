@@ -52,7 +52,7 @@ function Invoke-ParameterInteraction {
     param(
         [Parameter(Mandatory = $false)]
         [MediaType]$Type = [MediaType]::All,
-        [bool]$UseGpu = $true,
+        [string]$Encoder,
         [bool]$Silent = $false
     )
 
@@ -75,19 +75,18 @@ function Invoke-ParameterInteraction {
 
         # 视频工具特殊模式处理 (GPU/CPU)
         if ($Tool.category -eq "video" -and $Tool.modes) {
-            $targetMode = if ($UseGpu) { "gpu" } else { "cpu" }
-            if ($Tool.modes.$targetMode) {
-                $tParams = if ($Tool.modes.$targetMode.template_parameters) { $Tool.modes.$targetMode.template_parameters } else { $Tool.template_parameters }
+            if ($Tool.modes.$Encoder) {
+                $tParams = if ($Tool.modes.$Encoder.template_parameters) { $Tool.modes.$Encoder.template_parameters } else { $Tool.template_parameters }
                 # 如果模式中有独立的指令定义则覆盖
-                if ($Tool.modes.$targetMode.parameters) {
-                    $cmdPreview = ($Tool.modes.$targetMode.parameters | ForEach-Object { $_ -join ' ' }) -join ' '
+                if ($Tool.modes.$Encoder.parameters) {
+                    $cmdPreview = ($Tool.modes.$Encoder.parameters | ForEach-Object { $_ -join ' ' }) -join ' '
                 }
                 $ToolList += [pscustomobject]@{
                     Name     = $ToolName
                     Category = $Tool.category
                     Formats  = ($Tool.format -join ', ')
                     RawCmd   = $cmdPreview
-                    Mode     = $targetMode
+                    Mode     = $Encoder
                     Params   = $tParams
                 }
             }
@@ -311,7 +310,7 @@ function Convert-FilesToTasks {
         [MediaType]$Type,        # 外部传入的 MediaType 枚举: Image, Video, All
 
         [Parameter(Mandatory = $false)]
-        [bool]$UseGpu = $false,   # 明确指定是否使用 GPU
+        [string]$Encoder ,   
 
         [Parameter(Mandatory = $false)]
         [bool]$Silent = $false   # 新增参数：是否静默处理（不输出转换预览）
@@ -327,7 +326,7 @@ function Convert-FilesToTasks {
         }
     }
     
-    $userParams = Invoke-ParameterInteraction -Type $Type -UseGpu $UseGpu -Silent $Silent
+    $userParams = Invoke-ParameterInteraction -Type $Type -Encoder $Encoder -Silent $Silent
     $commandMap = Get-CommandMap -UserParamsMap $userParams
     if ($null -eq $commandMap -or $commandMap.Count -eq 0) {
         Write-Host "没有加载到可用的格式配置！" -ForegroundColor Red
@@ -385,7 +384,8 @@ function Convert-FilesToTasks {
         $cmdKey = switch ($type) {
             ([MediaType]::Video) {
                 # 确保 $useGpu 在当前作用域可用
-                if ($UseGpu) { "$ext" + "_gpu" } else { "$ext" + "_cpu" }
+                #if ($UseGpu) { "$ext" + "_gpu" } else { "$ext" + "_cpu" }
+                "${ext}_$Encoder"
             }
             ([MediaType]::Image) { $ext }
             default { $ext }

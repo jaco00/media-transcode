@@ -58,39 +58,102 @@
       "category": "video",
       "priority": 1,
       "format": [".mp4", ".mov", ".wmv", ".avi", ".mkv"],
+
       "modes": {
-        "gpu": {
-          "template_parameters": {
-            "CQ": 21
-          },
-          "parameters": [
-            ["-y"], ["-hide_banner"], ["-loglevel", "warning"], ["-stats"],
-            ["-i", "$IN$"],
-            ["-map_metadata", "0", "-movflags", "use_metadata_tags"],
-            ["-c:v", "hevc_nvenc"],
-            ["-cq", "$CQ$"],
-            ["-preset", "p4"],
-            ["-c:a", "aac"],
-            ["-movflags", "+faststart"],
-            ["-pix_fmt", "yuv420p"],
-            ["-f", "mp4"],
-            ["$OUT$"]
-          ]
-        },
+
         "cpu": {
           "template_parameters": {
             "CRF": 23
           },
           "parameters": [
-            ["-y"], ["-hide_banner"], ["-loglevel", "warning"], ["-stats"],
+            ["-y"],
+            ["-hide_banner"],
+            ["-loglevel", "warning"],
+            ["-stats"],
             ["-i", "$IN$"],
-            ["-map_metadata", "0", "-movflags", "use_metadata_tags"],
+            ["-map_metadata", "0"],
+            ["-movflags", "+use_metadata_tags+faststart"],
             ["-c:v", "libx265"],
             ["-x265-params", "log-level=error"],
             ["-crf", "$CRF$"],
             ["-preset", "medium"],
             ["-c:a", "aac"],
-            ["-movflags", "+faststart"],
+            ["-b:a", "128k"],
+            ["-pix_fmt", "yuv420p"],
+            ["-f", "mp4"],
+            ["$OUT$"]
+          ]
+        },
+
+        "qsv": {
+          "template_parameters": {
+            "QUALITY": 22
+          },
+          "parameters": [
+            ["-y"],
+            ["-hide_banner"],
+            ["-loglevel", "warning"],
+            ["-stats"],
+            ["-hwaccel", "qsv"],
+            ["-i", "$IN$"],
+            ["-map_metadata", "0"],
+            ["-movflags", "+use_metadata_tags+faststart"],
+            ["-c:v", "hevc_qsv"],
+            ["-global_quality", "$QUALITY$"],
+            ["-preset", "slower"],
+            ["-look_ahead", "1"],
+            ["-look_ahead_depth", "40"],
+            ["-c:a", "aac"],
+            ["-b:a", "128k"],
+            ["-f", "mp4"],
+            ["$OUT$"]
+          ]
+        },
+
+        "vcn": {
+          "template_parameters": {
+            "QP": 25
+          },
+          "parameters": [
+            ["-y"],
+            ["-hide_banner"],
+            ["-loglevel", "warning"],
+            ["-stats"],
+            ["-i", "$IN$"],
+            ["-map_metadata", "0"],
+            ["-movflags", "+use_metadata_tags+faststart"],
+            ["-c:v", "hevc_amf"],
+            ["-rc", "cqp"],
+            ["-qp_i", "$QP$"],
+            ["-qp_p", "$QP$"],
+            ["-qp_b", "$QP$"],
+            ["-quality", "quality"],
+            ["-c:a", "aac"],
+            ["-b:a", "128k"],
+            ["-pix_fmt", "yuv420p"],
+            ["-f", "mp4"],
+            ["$OUT$"]
+          ]
+        },
+
+        "nvenc": {
+          "template_parameters": {
+            "CQ": 25
+          },
+          "parameters": [
+            ["-y"],
+            ["-hide_banner"],
+            ["-loglevel", "warning"],
+            ["-stats"],
+            ["-i", "$IN$"],
+            ["-map_metadata", "0"],
+            ["-movflags", "+use_metadata_tags+faststart"],
+            ["-c:v", "hevc_nvenc"],
+            ["-cq", "$CQ$"],
+            ["-preset", "p4"],
+            ["-rc-lookahead", "40"],
+            ["-c:a", "aac"],
+            ["-b:a", "128k"],
             ["-pix_fmt", "yuv420p"],
             ["-f", "mp4"],
             ["$OUT$"]
@@ -99,6 +162,7 @@
       }
     }
   },
+
   "checker": [
     {
       "tool": "ffmpeg",

@@ -96,21 +96,83 @@ $MaxThreads = $useCores
 $startTime = Get-Date
 $UserExtFilter = @()
 
-# ---------- 硬件检测 ----------
-$gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*NVIDIA*" }
-$useGpu = [bool]$gpu
-if ($useGpu) {
-    Write-Host "[硬件] 检测到 NVIDIA ($($gpu.Name))，开启显卡加速 (NVENC)。" -ForegroundColor Green
-}
-else {
-    Write-Host "[硬件] 未发现 NVIDIA 显卡，使用 CPU 模式 (libx265)。" -ForegroundColor Yellow
-}
-
 $IsAutoMode = $Cmd -in @("img", "video", "all")
 if ($IsAutoMode) {
     Write-Host "[Mode] 自动化执行模式: $Cmd (全扫描/默认确认)" -ForegroundColor Cyan
 }
 
+# ---------- 硬件检测 ----------
+$encoderMap = [ordered]@{
+    "NVIDIA" = "nvenc"
+    "AMD"    = "vcn"
+    "Intel"  = "qsv"
+    "CPU"    = "cpu"
+}
+
+$gpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+
+$encoder = "CPU"
+
+foreach ($type in $encoderMap.Keys) {
+    if ($type -eq "CPU") {
+        $encoder = "CPU"
+        break
+    }
+
+    if ($gpus.Name -match $type) {
+        $encoder = $encoderMap[$type]
+        break
+    }
+}
+
+Write-Host "[编码] 自动选择：$encoder" -ForegroundColor Green
+
+if (-not $IsAutoMode) {
+
+    Write-Host ""
+    Write-Host "========== 可用编码器 =========="
+    Write-Host ""
+
+    $manualModes = @()
+
+    foreach ($gpu in $gpus) {
+
+        if ($gpu.Name -match "NVIDIA") {
+            $mode = "nvenc"
+        }
+        elseif ($gpu.Name -match "AMD") {
+            $mode = "vcn"
+        }
+        elseif ($gpu.Name -match "Intel") {
+            $mode = "qsv"
+        }
+        else {
+            continue
+        }
+
+        $manualModes += $mode
+
+        Write-Host ("{0,-6} -> {1}" -f $mode, $gpu.Name)
+    }
+
+    $manualModes += "cpu"
+    Write-Host ("{0,-6} -> {1}" -f "cpu", "CPU")
+
+    Write-Host ""
+
+    do {
+        $inputMode = (Read-Host "请输入编码模式").Trim().ToLower()
+
+        if ($manualModes -contains $inputMode) {
+            $encoder = $inputMode
+            break
+        }
+
+        Write-Host "输入无效，请重新输入。" -ForegroundColor Yellow
+
+    } while ($true)
+    Write-Host "[编码器] 选择：$encoder" -ForegroundColor Green
+}
 
 $Supported = Get-SupportedExtensions
 $videoExtensions = $Supported.video
@@ -358,7 +420,7 @@ foreach ($key in $configItems.Keys) {
 }
 
 $allFiles= $imageFiles + $videoFiles
-$allTasks = Convert-FilesToTasks -files $allFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type $CurrentMode -UseGpu $useGpu -Silent $IsAutoMode
+$allTasks = Convert-FilesToTasks -files $allFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type $CurrentMode -Encoder $encoder -Silent $IsAutoMode  #todo
 
 # 2. 根据 EnableParallel 属性进行分流
 $parallelTasks = [System.Collections.Generic.List[object]]::new()
