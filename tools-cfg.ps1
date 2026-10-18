@@ -312,6 +312,12 @@ function Convert-FilesToTasks {
         [Parameter(Mandatory = $false)]
         [string]$Encoder ,   
 
+        [Parameter(Mandatory = $true)]
+        [string]$ImageDstExt,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$VideoDstExt,
+
         [Parameter(Mandatory = $false)]
         [bool]$Silent = $false   # 新增参数：是否静默处理（不输出转换预览）
     )
@@ -364,9 +370,9 @@ function Convert-FilesToTasks {
 
         
         $targetName = switch ($type) {
-            ([MediaType]::Image) { "$fileBaseName.avif" }
-            ([MediaType]::Video) { "$fileBaseName.h265.mp4" }
-            default { "$fileBaseName.avif" }
+            ([MediaType]::Image) { "$fileBaseName$ImageDstExt" }
+            ([MediaType]::Video) { "$fileBaseName$VideoDstExt" }
+            default { "$fileBaseName.unknown" }
         }
 
         $targetOut = Join-Path $file.Directory.FullName $targetName

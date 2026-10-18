@@ -1,8 +1,8 @@
 {
   "ReservedCores": 2,
   "ImageOutputExt": ".avif",
-  "VideoOutputExt": ".h265.mp4",
-  "SkipExt": ".skip",
+  "VideoOutputExt": ".venc.mp4",
+  "SkipExt": ".skip,.av1",
   "tools": {
     "avifenc": {
       "path": "",
@@ -87,7 +87,7 @@
 
         "qsv": {
           "template_parameters": {
-            "QUALITY": 22
+            "QUALITY": 21
           },
           "parameters": [
             ["-y"],

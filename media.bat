@@ -28,6 +28,7 @@ if "%CMD%" == "" goto :usage
 :: =============================================================
 where pwsh >nul 2>nul
 if %ERRORLEVEL% == 0 (
+    echo [INFO] PowerShell 7 detected.
     set "PS_CMD=pwsh -NoProfile -ExecutionPolicy Bypass -File"
 ) else (
     set "PS_CMD=powershell -NoProfile -ExecutionPolicy Bypass -File"
@@ -38,7 +39,7 @@ if %ERRORLEVEL% == 0 (
 :: =============================================================
 
 :: Core compression tasks (zip, all, img, video) call zip.ps1
-for %%a in (zip all img video filter) do (
+for %%a in (zip all img video qsv filter) do (
     if /i "%CMD%" == "%%a" goto :media_logic
 )
 
@@ -96,6 +97,7 @@ echo   zip    - Interactive mode for all media
 echo   all    - Automatic mode for all media 
 echo   img    - Process images only 
 echo   video  - Process videos only 
+echo   qsv    - Process videos only using Intel Quick Sync Video (QSV)
 echo   filter - Process files by ext filter
 echo   comp   - Compare quality between source and compressed files
 echo   clean  - Remove source files after compression

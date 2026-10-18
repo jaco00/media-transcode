@@ -49,7 +49,7 @@ if (-Not ($configData.PSObject.Properties.Name -contains "SkipExt")) {
 
 $ImageDstExt = $configData.ImageOutputExt
 $VideoDstExt = $configData.VideoOutputExt
-$SkipExt     = $configData.SkipExt
+$SkipExt     = ",$($configData.SkipExt.Trim(',')),"
 
 
 try {
@@ -96,7 +96,7 @@ $MaxThreads = $useCores
 $startTime = Get-Date
 $UserExtFilter = @()
 
-$IsAutoMode = $Cmd -in @("img", "video", "all")
+$IsAutoMode = $Cmd -in @("img", "video", "qsv", "all")
 if ($IsAutoMode) {
     Write-Host "[Mode] 自动化执行模式: $Cmd (全扫描/默认确认)" -ForegroundColor Cyan
 }
@@ -111,24 +111,20 @@ $encoderMap = [ordered]@{
 
 $gpus = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
 
-$encoder = "CPU"
+$encoder = "cpu"
 
 foreach ($type in $encoderMap.Keys) {
-    if ($type -eq "CPU") {
-        $encoder = "CPU"
-        break
-    }
-
     if ($gpus.Name -match $type) {
         $encoder = $encoderMap[$type]
         break
     }
 }
 
-Write-Host "[编码] 自动选择：$encoder" -ForegroundColor Green
-
-if (-not $IsAutoMode) {
-
+if ($IsAutoMode){
+    if ($Cmd -eq "qsv"){
+        $encoder = "qsv"
+    }
+} else {
     Write-Host ""
     Write-Host "========== 可用编码器 =========="
     Write-Host ""
@@ -171,8 +167,9 @@ if (-not $IsAutoMode) {
         Write-Host "输入无效，请重新输入。" -ForegroundColor Yellow
 
     } while ($true)
-    Write-Host "[编码器] 选择：$encoder" -ForegroundColor Green
 }
+
+Write-Host "[编码器] 选择：$encoder" -ForegroundColor Green
 
 $Supported = Get-SupportedExtensions
 $videoExtensions = $Supported.video
@@ -232,14 +229,15 @@ if ($IsAutoMode -or $Cmd -eq "filter") {
     switch ($Cmd) {
         "img"   { [MediaType]$CurrentMode = [MediaType]::Image }
         "video" { [MediaType]$CurrentMode = [MediaType]::Video }
+        "qsv"   { [MediaType]$CurrentMode = [MediaType]::Video }
         "all"   { [MediaType]$CurrentMode = [MediaType]::All }
         "filter"   { [MediaType]$CurrentMode = [MediaType]::All }
     }
 } else {
 
-    $InputProcessType = Read-Host "请选择处理类型 [0] 仅图片(默认) [1] 仅视频 [2] 所有"
+    $InputProcessType = Read-Host "请选择处理类型 (0 仅图片/1 仅视频/2 所有) [默认: 所有]"
     if ([string]::IsNullOrWhiteSpace($InputProcessType) -or $InputProcessType -notmatch '^[012]$') {
-        $CurrentMode = [MediaType]::Image
+        $CurrentMode = [MediaType]::All
     } else {
         [MediaType]$CurrentMode = [int]$InputProcessType
     }
@@ -252,19 +250,29 @@ if (-not $IsAutoMode) {
     }
 }
 
-
-# 解析源目录路径 (支持绝对/相对路径与标准化)
+# 解析源路径（支持绝对/相对路径、目录和单个文件）
 if ([System.IO.Path]::IsPathRooted($SourcePath)) {
-    $InputRoot = [System.IO.Path]::GetFullPath($SourcePath)
+    $ResolvedSource = [System.IO.Path]::GetFullPath($SourcePath)
 }
 else {
-    $InputRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot $SourcePath))
+    $ResolvedSource = [System.IO.Path]::GetFullPath(
+        (Join-Path $PSScriptRoot $SourcePath)
+    )
 }
-$InputRoot = (Resolve-Path $InputRoot).Path.TrimEnd([IO.Path]::DirectorySeparatorChar)
-Write-Host "扫描目录: $InputRoot" -ForegroundColor Cyan
+$SourceItem = Get-Item -LiteralPath $ResolvedSource -ErrorAction Stop
+$IsSingleFile = -not $SourceItem.PSIsContainer
+if ($IsSingleFile) {
+    $SourceFilePath = $SourceItem.FullName
+    $InputRoot = $SourceItem.Directory.FullName
+    Write-Host "处理单个文件: $SourceFilePath" -ForegroundColor Cyan
+}
+else {
+    $InputRoot = $SourceItem.FullName.TrimEnd('\', '/')
+    Write-Host "扫描目录: $InputRoot" -ForegroundColor Cyan
+}
 
 # 打印过滤信息
-if ($IncludeDirs.Count -gt 0) {
+if (-not $IsSingleFile -and $IncludeDirs.Count -gt 0) {
     Write-Host "子目录过滤器已启用: $($IncludeDirs -join ', ')" -ForegroundColor Yellow
 }
 else {
@@ -283,14 +291,25 @@ $skipCount = 0    # 手动跳过计数
 # 获取所有文件
 $spinner = New-ConsoleSpinner -Title "扫描目录中" -SamplingRate 2500
 
-foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
+$root = [IO.Path]::GetFullPath($InputRoot).TrimEnd('\', '/') + '\'
+
+
+if ($IsSingleFile) {
+    $files = Get-Item -LiteralPath $SourceFilePath
+}else{
+    $files= Get-ChildItem $InputRoot -Recurse -File
+}
+
+foreach ($file in $files) {
     &$spinner $file.FullName
     # 1. 根子目录过滤 (如果 $IncludeDirs 非空)
     if ($IncludeDirs.Count -gt 0) {
         if ($file.Directory.FullName -eq $InputRoot) { continue }
 
-        $firstDir = [IO.Path]::GetRelativePath($InputRoot, $file.Directory.FullName).
-            Split([IO.Path]::DirectorySeparatorChar)[0]
+#        $firstDir = [IO.Path]::GetRelativePath($InputRoot, $file.Directory.FullName).
+#            Split([IO.Path]::DirectorySeparatorChar)[0]
+        $dir = [IO.Path]::GetFullPath($file.Directory.FullName)
+        $firstDir = $dir.Substring($root.Length).Split('\')[0]
 
         if ($firstDir -notin $IncludeDirs) { continue }
     }
@@ -304,7 +323,13 @@ foreach ($file in Get-ChildItem $InputRoot -Recurse -File) {
 
     # 2. 状态判断
     $isTranscoded = ($name.EndsWith($VideoDstExt) -or $name.EndsWith($ImageDstExt))
-    $isExplicitSkip = ($isImage -or $isVideo) -and $name.EndsWith(($SkipExt + $ext))
+
+    #$isExplicitSkip = ($isImage -or $isVideo) -and $name.EndsWith(($SkipExt + $ext))
+
+    $secondExt = [System.IO.Path]::GetExtension(
+        [System.IO.Path]::GetFileNameWithoutExtension($name)
+    )
+    $isExplicitSkip = ($isImage -or $isVideo) -and $SkipExt.Contains(",$secondExt,")
 
     if ($UserExtFilter.Count -gt 0 -and $ext -notin $UserExtFilter) {
         continue
@@ -420,7 +445,14 @@ foreach ($key in $configItems.Keys) {
 }
 
 $allFiles= $imageFiles + $videoFiles
-$allTasks = Convert-FilesToTasks -files $allFiles -InputRoot $InputRoot -BackupRoot $BackupRoot -Type $CurrentMode -Encoder $encoder -Silent $IsAutoMode  #todo
+$allTasks = Convert-FilesToTasks -files $allFiles `
+    -InputRoot $InputRoot `
+    -BackupRoot $BackupRoot `
+    -Type $CurrentMode `
+    -Encoder $encoder `
+    -ImageDstExt $ImageDstExt `
+    -VideoDstExt $VideoDstExt `
+    -Silent $IsAutoMode  
 
 # 2. 根据 EnableParallel 属性进行分流
 $parallelTasks = [System.Collections.Generic.List[object]]::new()
